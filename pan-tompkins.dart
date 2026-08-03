@@ -189,16 +189,16 @@ class PanTompkinsQRS {
         if (integration_signal[current_peak] >= THRESHOLDI1) {
           SPKI = 0.125 * integration_signal[current_peak] + 0.875 * SPKI;
           if (possible_peaks[index] > THRESHOLDF1) {
-            SPKF = 0.125 * band_pass_signal[index] + 0.875 * SPKF;
+            SPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * SPKF;
             signal_peaks.add(possible_peaks[index]);
           } else {
-            NPKF = 0.125 * band_pass_signal[index] + 0.875 * NPKF;
+            NPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * NPKF;
           }
         } else if ((integration_signal[current_peak] > THRESHOLDI2 &&
                 integration_signal[current_peak] < THRESHOLDI1) ||
             (integration_signal[current_peak] < THRESHOLDI2)) {
           NPKI = 0.125 * integration_signal[current_peak] + 0.875 * NPKI;
-          NPKF = 0.125 * band_pass_signal[index] + 0.875 * NPKF;
+          NPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * NPKF;
         }
       } else {
         List RRAVERAGE1 = divideList(
