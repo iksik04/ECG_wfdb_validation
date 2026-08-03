@@ -8,7 +8,7 @@ import 'dart:math';
 String wfdbBinPath = 'C:/Instruments/wfdb_utils/wfdb-software-package-10.6.2/build/bin';
 
 class PanTompkinsQRS {
-  List<double> bandPassFilter(List<double> signal) {
+  /*List<double> bandPassFilter(List<double> signal) {
     List<double> sig = List.from(signal);
     List<double> result = <double>[
       for (double i = 0; i < signal.length; i++) i
@@ -56,7 +56,7 @@ class PanTompkinsQRS {
     result = result.map((val) => val / maxVal).toList();
 
     return result;
-  }
+  }*/
 
   List<double> derivative(List<double> signal, double fs) {
     List<double> result = <double>[
@@ -135,212 +135,240 @@ class PanTompkinsQRS {
     return (heartRate, peaks);
   }
 
-  List<int> detectPeaks(
-      {required List<double> ecgSingal,
-      required int fs,
-      required List<double> integration_signal,
-      required List<double> band_pass_signal}) {
-    List<int> possible_peaks = [];
-    List<int> signal_peaks = [];
-    List<int> r_peaks = [];
-    double SPKI = 0;
-    double SPKF = 0;
-    double NPKI = 0;
-    double NPKF = 0;
-    List rr_avg_one = [];
-    double THRESHOLDI1 = 0;
-    double THRESHOLDF1 = 0;
-    List<double> rr_avg_two = [];
-    double THRESHOLDI2 = 0;
-    double THRESHOLDF2 = 0;
-    int is_T_found = 0;
-    double current_slope = 0;
-    double previous_slope = 0;
-    int window = (0.15 * fs).round();
-    List FM_peaks = [];
-    List<double> integration_signal_smooth =
-        convolution([...integration_signal]);
-    List localDiff = diff([...integration_signal_smooth]);
-    double RR_LOW_LIMIT = -999;
-    double RR_HIGH_LIMIT = 999;
-    double RR_MISSED_LIMIT = 0;
+  List<int> detectPeaks({
+  required List<double> ecgSingal,
+  required int fs,
+  required List<double> integration_signal,
+  required List<double> band_pass_signal,
+}) {
+  // ---- Объявление всех переменных (были удалены) ----
+  double SPKI = 0.0;
+  double NPKI = 0.0;
+  double SPKF = 0.0;
+  double NPKF = 0.0;
+  double THRESHOLDI1 = 0.0;
+  double THRESHOLDF1 = 0.0;
+  double THRESHOLDI2 = 0.0;
+  double THRESHOLDF2 = 0.0;
+  
+  List<int> possible_peaks = [];
+  List<int> signal_peaks = [];
+  List<int> r_peaks = [];
 
-    for (int i = 1; i < localDiff.length; i++) {
-      if (i - 1 > 2 * fs && localDiff[i - 1] > 0 && localDiff[i] < 0) {
-        FM_peaks.add(i - 1);
-      }
+  // ---- Пункт 1: инициализация порогов по первым 2 секундам ----
+  int initLen = (2 * fs).clamp(0, band_pass_signal.length);
+  List<double> intInit = integration_signal.sublist(0, initLen);
+  List<double> bpInit = band_pass_signal.sublist(0, initLen);
+
+  List<int> localMaxIdx = [];
+  for (int i = 1; i < initLen - 1; i++) {
+    if (intInit[i] > intInit[i - 1] && intInit[i] > intInit[i + 1]) {
+      localMaxIdx.add(i);
     }
-    for (int index = 0; index < FM_peaks.length; index++) {
-      int current_peak = FM_peaks[index];
-      int left_limit = max(current_peak - window, 0);
-      int right_limit = min(current_peak + window + 1, band_pass_signal.length);
-      int max_index = -1;
-      double max_value = -999999;
-      for (int i = left_limit; i < right_limit; i++) {
-        if (band_pass_signal[i] > max_value) {
-          max_value = band_pass_signal[i];
-          max_index = i;
-        }
-      }
-      if (max_index != -1) {
-        possible_peaks.add(max_index);
-      }
-      if (index == 0 || index > possible_peaks.length) {
-        if (integration_signal[current_peak] >= THRESHOLDI1) {
-          SPKI = 0.125 * integration_signal[current_peak] + 0.875 * SPKI;
-          if (possible_peaks[index] > THRESHOLDF1) {
-            SPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * SPKF;
-            signal_peaks.add(possible_peaks[index]);
-          } else {
-            NPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * NPKF;
-          }
-        } else if ((integration_signal[current_peak] > THRESHOLDI2 &&
-                integration_signal[current_peak] < THRESHOLDI1) ||
-            (integration_signal[current_peak] < THRESHOLDI2)) {
-          NPKI = 0.125 * integration_signal[current_peak] + 0.875 * NPKI;
-          NPKF = 0.125 * band_pass_signal[possible_peaks[index]] + 0.875 * NPKF;
-        }
-      } else {
-        List RRAVERAGE1 = divideList(
-            diff(FM_peaks.sublist(max(0, index - 8), index + 1)), fs);
-        double rr_one_mean = average(RRAVERAGE1);
-        rr_avg_one.add(rr_one_mean);
-        double limit_factor = rr_one_mean;
-
-        if (index >= 8) {
-          for (double RR in RRAVERAGE1) {
-            if (RR > RR_LOW_LIMIT && RR < RR_HIGH_LIMIT) {
-              rr_avg_two.add(RR);
-              if (rr_avg_two.length == 9) {
-                rr_avg_two.removeAt(0);
-                limit_factor = average(rr_avg_two);
-              }
-            }
-          }
-          if (rr_avg_two.length == 8 || index < 8) {
-            RR_LOW_LIMIT = 0.92 * limit_factor;
-            RR_HIGH_LIMIT = 1.16 * limit_factor;
-            RR_MISSED_LIMIT = 1.66 * limit_factor;
-            RR_MISSED_LIMIT = 1.66 * limit_factor;
-          }
-          if (rr_avg_one[rr_avg_one.length - 1] < RR_LOW_LIMIT ||
-              rr_avg_one[rr_avg_one.length - 1] > RR_MISSED_LIMIT) {
-            THRESHOLDI1 = THRESHOLDI1 / 2;
-            THRESHOLDF1 = THRESHOLDF1 / 2;
-          }
-
-          double curr_rr_interval = RRAVERAGE1[RRAVERAGE1.length - 1];
-          int search_back_window = (curr_rr_interval * fs).round();
-          if (curr_rr_interval > RR_MISSED_LIMIT) {
-            left_limit = current_peak - search_back_window + 1;
-            right_limit = current_peak + 1;
-            int search_back_max_index = -1;
-            max_value = -999999;
-            for (int i = left_limit; i < right_limit; i++) {
-              if (integration_signal[i] > THRESHOLDI1 &&
-                  integration_signal[i] > max_value) {
-                max_value = integration_signal[i];
-                search_back_max_index = i;
-              }
-            }
-            if (search_back_max_index != -1) {
-              SPKI = 0.25 *
-                      integration_signal[search_back_max_index < 0
-                          ? integration_signal.length + search_back_max_index
-                          : search_back_max_index] +
-                  0.75 * SPKI;
-              THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-              THRESHOLDI2 = 0.5 * THRESHOLDI1;
-
-              left_limit = search_back_max_index - (0.15 * fs).round();
-              right_limit = min(band_pass_signal.length, search_back_max_index);
-
-              int search_back_max_index2 = -1;
-              max_value = -999999;
-
-              for (int i = left_limit; i < right_limit; i++) {
-                if (band_pass_signal[i] > THRESHOLDF1 &&
-                    band_pass_signal[i] > max_value) {
-                  max_value = band_pass_signal[i];
-                  search_back_max_index2 = i;
-                }
-              }
-
-              if (search_back_max_index2 != -1 &&
-                  band_pass_signal[search_back_max_index2 < 0
-                      ? integration_signal.length + search_back_max_index2
-                      : search_back_max_index2] > THRESHOLDF2) {
-                SPKF = 0.25 *
-                        band_pass_signal[search_back_max_index2 < 0
-                            ? integration_signal.length + search_back_max_index2
-                            : search_back_max_index2] +
-                    0.75 * SPKF;
-                THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-                THRESHOLDF2 = 0.5 * THRESHOLDF1;
-                signal_peaks.add(search_back_max_index2);
-              }
-            }
-          }
-          if (integration_signal[current_peak] >= THRESHOLDI1) {
-            if (curr_rr_interval > 0.20 &&
-                curr_rr_interval < 0.36 &&
-                index > 0) {
-              current_slope = geMax(diff(integration_signal.sublist(
-                  current_peak - (fs * 0.075).round(), current_peak + 1)));
-
-              previous_slope = geMax(diff(integration_signal.sublist(
-                  FM_peaks[index - 1] - (fs * 0.075).round(),
-                  FM_peaks[index - 1] + 1)));
-              if (current_slope < 0.5 * previous_slope) {
-                NPKI = 0.125 * integration_signal[current_peak] + 0.875 * NPKI;
-                is_T_found = 1;
-              }
-            }
-
-            if (is_T_found == 0) {
-              SPKI = 0.125 * integration_signal[current_peak] + 0.875 * SPKI;
-
-              if (possible_peaks[index] > THRESHOLDF1) {
-                SPKF = 0.125 * band_pass_signal[index] + 0.875 * SPKF;
-                signal_peaks.add(possible_peaks[index]);
-              } else {
-                NPKF = 0.125 * band_pass_signal[index] + 0.875 * NPKF;
-              }
-            }
-          } else if ((integration_signal[current_peak] > THRESHOLDI1 &&
-                  integration_signal[current_peak] < THRESHOLDI2) ||
-              (integration_signal[current_peak] < THRESHOLDI1)) {
-            NPKI = 0.125 * integration_signal[current_peak] + 0.875 * NPKI;
-            NPKF = 0.125 * band_pass_signal[index] + 0.875 * NPKF;
-          }
-
-          THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-          THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-          THRESHOLDI2 = 0.5 * THRESHOLDI1;
-          THRESHOLDF2 = 0.5 * THRESHOLDF1;
-          is_T_found = 0;
-        }
-      }
-    }
-    for (int i in unique(signal_peaks)) {
-      int window = (0.2 * fs).round();
-      int left_limit = i - window;
-      double right_limit = min(i + window + 1, ecgSingal.length.toDouble());
-      double max_value = -double.infinity;
-      int max_index = -1;
-      for (int i = left_limit; i < right_limit; i++) {
-        if (ecgSingal[i] > max_value) {
-          max_value = ecgSingal[i];
-          max_index = i;
-        }
-      }
-      r_peaks.add(max_index);
-    }
-
-    return r_peaks;
   }
-}
+  if (localMaxIdx.isEmpty) {
+    double meanInt = intInit.reduce((a, b) => a + b) / intInit.length;
+    double meanBp = bpInit.reduce((a, b) => a + b) / bpInit.length;
+    SPKI = meanInt * 0.5;
+    NPKI = meanInt * 0.5;
+    SPKF = meanBp * 0.5;
+    NPKF = meanBp * 0.5;
+  } else {
+    List<double> intVals = localMaxIdx.map((i) => intInit[i]).toList();
+    intVals.sort((a, b) => b.compareTo(a));
+    List<double> bpVals = localMaxIdx.map((i) => bpInit[i]).toList();
+    bpVals.sort((a, b) => b.compareTo(a));
 
+    if (intVals.length >= 2) {
+      SPKI = (intVals[0] + intVals[1]) / 2;
+      NPKI = intVals.sublist(2).reduce((a, b) => a + b) / intVals.sublist(2).length;
+      SPKF = (bpVals[0] + bpVals[1]) / 2;
+      NPKF = bpVals.sublist(2).reduce((a, b) => a + b) / bpVals.sublist(2).length;
+    } else {
+      SPKI = intVals[0];
+      NPKI = 0.0;
+      SPKF = bpVals[0];
+      NPKF = 0.0;
+    }
+  }
+
+  THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
+  THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
+  THRESHOLDI2 = 0.5 * THRESHOLDI1;
+  THRESHOLDF2 = 0.5 * THRESHOLDF1;
+
+  int is_T_found = 0;
+  double current_slope = 0;
+  double previous_slope = 0;
+  int window = (0.15 * fs).round();
+
+  // ---- Пункт 4: исправленная свёртка (без сдвига) ----
+  List<double> integration_signal_smooth = convolution([...integration_signal]);
+  List localDiff = diff([...integration_signal_smooth]);
+
+  List<int> FM_peaks = [];
+  for (int i = 1; i < localDiff.length; i++) {
+    if (i - 1 > 2 * fs && localDiff[i - 1] > 0 && localDiff[i] < 0) {
+      FM_peaks.add(i - 1);
+    }
+  }
+
+  // ---- Пункт 2: RR-буфер и лимиты ----
+  List<double> rr_history = [];
+  double RR_LOW_LIMIT = 0.2;
+  double RR_HIGH_LIMIT = 0.8;
+  double RR_MISSED_LIMIT = 1.2;
+
+  // ---- Основной цикл по FM_peaks ----
+  for (int index = 0; index < FM_peaks.length; index++) {
+    int current_peak = FM_peaks[index];
+    int left_limit = max(current_peak - window, 0);
+    int right_limit = min(current_peak + window + 1, band_pass_signal.length);
+
+    int max_index = -1;
+    double max_value = -999999;
+    for (int i = left_limit; i < right_limit; i++) {
+      if (band_pass_signal[i] > max_value) {
+        max_value = band_pass_signal[i];
+        max_index = i;
+      }
+    }
+    if (max_index == -1) continue;
+    possible_peaks.add(max_index);
+
+    double peak_int = integration_signal[current_peak];
+    double peak_bp = band_pass_signal[max_index];
+
+    // ---- Пункт 3: первый пик обрабатываем отдельно ----
+    if (index == 0) {
+      if (peak_int >= THRESHOLDI1) {
+        SPKI = 0.125 * peak_int + 0.875 * SPKI;
+        if (peak_bp > THRESHOLDF1) {
+          SPKF = 0.125 * peak_bp + 0.875 * SPKF;
+          signal_peaks.add(max_index);
+        } else {
+          NPKF = 0.125 * peak_bp + 0.875 * NPKF;
+        }
+      } else if (peak_int > THRESHOLDI2 && peak_int < THRESHOLDI1) {
+        NPKI = 0.125 * peak_int + 0.875 * NPKI;
+        NPKF = 0.125 * peak_bp + 0.875 * NPKF;
+      }
+      THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
+      THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
+      THRESHOLDI2 = 0.5 * THRESHOLDI1;
+      THRESHOLDF2 = 0.5 * THRESHOLDF1;
+      is_T_found = 0;
+      continue;
+    }
+
+    // ---- Обработка остальных пиков ----
+    double rr = (FM_peaks[index] - FM_peaks[index - 1]) / fs;
+    rr_history.add(rr);
+    if (rr_history.length > 8) rr_history.removeAt(0);
+
+    if (rr_history.length >= 8) {
+      double meanRR = rr_history.reduce((a, b) => a + b) / rr_history.length;
+      RR_LOW_LIMIT = 0.92 * meanRR;
+      RR_HIGH_LIMIT = 1.16 * meanRR;
+      RR_MISSED_LIMIT = 1.66 * meanRR;
+    }
+
+    // ---- Search-back для пропущенных пиков ----
+    if (rr > RR_MISSED_LIMIT) {
+      int search_back_window = (rr * fs).round();
+      left_limit = current_peak - search_back_window + 1;
+      right_limit = current_peak + 1;
+      int search_back_max_index = -1;
+      double max_int = -999999;
+      for (int i = left_limit; i < right_limit; i++) {
+        if (i < 0 || i >= integration_signal.length) continue;
+        if (integration_signal[i] > THRESHOLDI1 && integration_signal[i] > max_int) {
+          max_int = integration_signal[i];
+          search_back_max_index = i;
+        }
+      }
+      if (search_back_max_index != -1) {
+        SPKI = 0.25 * integration_signal[search_back_max_index] + 0.75 * SPKI;
+        THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
+        THRESHOLDI2 = 0.5 * THRESHOLDI1;
+
+        int sb_left = search_back_max_index - (0.15 * fs).round();
+        int sb_right = min(band_pass_signal.length, search_back_max_index);
+        int sb_max_idx = -1;
+        double max_bp = -999999;
+        for (int i = sb_left; i < sb_right; i++) {
+          if (i < 0 || i >= band_pass_signal.length) continue;
+          if (band_pass_signal[i] > THRESHOLDF1 && band_pass_signal[i] > max_bp) {
+            max_bp = band_pass_signal[i];
+            sb_max_idx = i;
+          }
+        }
+        if (sb_max_idx != -1 && band_pass_signal[sb_max_idx] > THRESHOLDF2) {
+          SPKF = 0.25 * band_pass_signal[sb_max_idx] + 0.75 * SPKF;
+          THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
+          THRESHOLDF2 = 0.5 * THRESHOLDF1;
+          signal_peaks.add(sb_max_idx);
+        }
+      }
+    }
+
+    // ---- Подавление T-зубцов ----
+    if (rr > 0.20 && rr < 0.36 && index > 0) {
+      int prev_peak = FM_peaks[index - 1];
+      current_slope = geMax(diff(integration_signal.sublist(
+          current_peak - (fs * 0.075).round(), current_peak + 1)));
+      previous_slope = geMax(diff(integration_signal.sublist(
+          prev_peak - (fs * 0.075).round(), prev_peak + 1)));
+      if (current_slope < 0.5 * previous_slope) {
+        NPKI = 0.125 * peak_int + 0.875 * NPKI;
+        is_T_found = 1;
+      }
+    }
+
+    // ---- Основное решение о пике ----
+    if (is_T_found == 0) {
+      if (peak_int >= THRESHOLDI1) {
+        SPKI = 0.125 * peak_int + 0.875 * SPKI;
+        if (peak_bp > THRESHOLDF1) {
+          SPKF = 0.125 * peak_bp + 0.875 * SPKF;
+          signal_peaks.add(max_index);
+        } else {
+          NPKF = 0.125 * peak_bp + 0.875 * NPKF;
+        }
+      } else if (peak_int > THRESHOLDI2 && peak_int < THRESHOLDI1) {
+        NPKI = 0.125 * peak_int + 0.875 * NPKI;
+        NPKF = 0.125 * peak_bp + 0.875 * NPKF;
+      }
+    }
+
+    // ---- Обновление порогов ----
+    THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
+    THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
+    THRESHOLDI2 = 0.5 * THRESHOLDI1;
+    THRESHOLDF2 = 0.5 * THRESHOLDF1;
+    is_T_found = 0;
+  }
+
+  // ---- Формирование финальных R-пиков ----
+  for (int i in unique(signal_peaks)) {
+    int w = (0.2 * fs).round();
+    int left_limit = i - w;
+    int right_limit = min(i + w + 1, ecgSingal.length);
+    double max_val = -double.infinity;
+    int max_idx = -1;
+    for (int j = left_limit; j < right_limit; j++) {
+      if (j < 0) continue;
+      if (ecgSingal[j] > max_val) {
+        max_val = ecgSingal[j];
+        max_idx = j;
+      }
+    }
+    if (max_idx != -1) r_peaks.add(max_idx);
+  }
+
+  return r_peaks;
+}
+}
 /// Вспомогательные функции
 List<double> convolution(List<double> signal) {
   List<double> sig1 = [...signal];
