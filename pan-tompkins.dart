@@ -122,15 +122,15 @@ class PanTompkinsQRS {
 
   (double, List<int>) solve(List<double> signal, int fs) {
     List<double> inputSignal = List.from(signal);
-    List<double> bpass = bandPassFilter(inputSignal);
-    List<double> der = derivative(bpass, fs.toDouble());
+    //List<double> bpass = bandPassFilter(inputSignal);
+    List<double> der = derivative(inputSignal, fs.toDouble());
     List<double> sqr = squaring(der);
     List<double> mwin = movingWindowIntegration(sqr, fs.toDouble());
     List<int> peaks = detectPeaks(
         ecgSingal: signal,
         fs: fs,
         integration_signal: mwin,
-        band_pass_signal: bpass);
+        band_pass_signal: inputSignal);
     double heartRate = (60 * fs) / average(diff(peaks.sublist(1)));
     return (heartRate, peaks);
   }
