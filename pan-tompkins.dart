@@ -130,11 +130,13 @@ class PanTompkinsQRS {
         ecgSingal: signal,
         fs: fs,
         integration_signal: mwin,
-        band_pass_signal: inputSignal);
+        band_pass_signal: signal);
     double heartRate = (60 * fs) / average(diff(peaks.sublist(1)));
     return (heartRate, peaks);
   }
 
+  // TODO: разобраться с фильтрами и тем, как они влияют на detectPeaks
+  
   List<int> detectPeaks({
   required List<double> ecgSingal,
   required int fs,

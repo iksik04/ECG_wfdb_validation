@@ -46,11 +46,6 @@ bxb -r 2201 -a atr gqrs -l bxb_AHA.out sd_AHA.out
 rxr -r 2201 -a atr gqrs -l vruns_AHA.out 
 mxm -r 2201 -a atr gqrs -L hr0.out -m 0
 
-: Record 2202
-bxb -r 2202 -a atr gqrs -l bxb_AHA.out sd_AHA.out
-rxr -r 2202 -a atr gqrs -l vruns_AHA.out 
-mxm -r 2202 -a atr gqrs -L hr0.out -m 0
-
 : Record 2203
 bxb -r 2203 -a atr gqrs -l bxb_AHA.out sd_AHA.out
 rxr -r 2203 -a atr gqrs -l vruns_AHA.out 
@@ -270,11 +265,6 @@ mxm -r 8203 -a atr gqrs -L hr0.out -m 0
 bxb -r 8204 -a atr gqrs -l bxb_AHA.out sd_AHA.out
 rxr -r 8204 -a atr gqrs -l vruns_AHA.out 
 mxm -r 8204 -a atr gqrs -L hr0.out -m 0
-
-: Record 8205
-bxb -r 8205 -a atr gqrs -l bxb_AHA.out sd_AHA.out
-rxr -r 8205 -a atr gqrs -l vruns_AHA.out 
-mxm -r 8205 -a atr gqrs -L hr0.out -m 0
 
 : Record 8206
 bxb -r 8206 -a atr gqrs -l bxb_AHA.out sd_AHA.out
