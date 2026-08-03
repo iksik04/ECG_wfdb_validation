@@ -2,7 +2,7 @@
 setlocal
 
 set SCRIPT_NAME=pan-tompkins.dart
-set DB_PATH=C:\Users\Public\Work\ECG_DB\AHADB
+set DB_PATH=C:\Users\Public\Work\ECG_DB\VFDB
 
 echo Searching for records in folder %DB_PATH%...
 echo.

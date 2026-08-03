@@ -5,7 +5,6 @@ import 'dart:math';
 
 /// Глобальная переменная для пути к утилитам WFDB
 /// По умолчанию пустая строка - утилиты ищутся в PATH
-/// Можно задать полный путь, например: '/usr/local/bin/' или 'C:\\WFDB\\bin\\'
 String wfdbBinPath = 'C:/Instruments/wfdb_utils/wfdb-software-package-10.6.2/build/bin';
 
 class PanTompkinsQRS {
