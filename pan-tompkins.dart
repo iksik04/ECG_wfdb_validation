@@ -1,96 +1,122 @@
-import 'dart:io';
-import 'dart:async';
-import 'dart:convert';
+// lib/pan_tompkins_alg.dart
 import 'dart:math';
 
-/// Глобальная переменная для пути к утилитам WFDB
-/// По умолчанию пустая строка - утилиты ищутся в PATH
-String wfdbBinPath = 'C:/Instruments/wfdb_utils/wfdb-software-package-10.6.2/build/bin';
-
 class PanTompkinsQRS {
-  /*List<double> bandPassFilter(List<double> signal) {
-    List<double> sig = List.from(signal);
-    List<double> result = <double>[
-      for (double i = 0; i < signal.length; i++) i
-    ];
 
-    for (int index = 0; index < signal.length; index++) {
-      sig[index] = signal[index];
-
-      if (index >= 1) {
-        sig[index] += 2 * sig[index - 1];
-      }
-
-      if (index >= 2) {
-        sig[index] -= sig[index - 2];
-      }
-
-      if (index >= 6) {
-        sig[index] -= 2 * signal[index - 6];
-      }
-
-      if (index >= 12) {
-        sig[index] += signal[index - 12];
-      }
+  List<double> scaleToOriginal(List<double> processed, List<double> original) {
+    if (processed.length != original.length) {
+      throw ArgumentError('Длины сигналов должны совпадать.');
     }
 
-    result = List.from(sig);
+    // Вычисляем RMS исходного сигнала
+    double rmsOrig = 0.0;
+    for (var v in original) rmsOrig += v * v;
+    rmsOrig = sqrt(rmsOrig / original.length);
 
-    for (int index = 0; index < signal.length; index++) {
-      result[index] = -1 * sig[index];
+    // Вычисляем RMS обработанного сигнала
+    double rmsProc = 0.0;
+    for (var v in processed) rmsProc += v * v;
+    rmsProc = sqrt(rmsProc / processed.length);
 
-      if (index >= 1) {
-        result[index] -= result[index - 1];
-      }
+    // Если RMS обработанного сигнала равен нулю, возвращаем копию без изменений
+    if (rmsProc == 0.0) return List.from(processed);
 
-      if (index >= 16) {
-        result[index] += 32 * sig[index - 16];
-      }
+    double scale = rmsOrig / rmsProc;
+    return processed.map((v) => v * scale).toList();
+  }
 
-      if (index >= 32) {
-        result[index] += sig[index - 32];
-      }
-    }
+  // Буферы для ФНЧ (нужно 13 отсчётов для x[n-12])
+  final List<double> _lBuffer = [];
+  double _lPrev1 = 0.0;  // y[n-1]
+  double _lPrev2 = 0.0;  // y[n-2]
 
-    double maxVal = max(result.reduce(max), -result.reduce(min));
-    result = result.map((val) => val / maxVal).toList();
+  // Буферы для ФВЧ (нужно 33 отсчёта для x[n-32])
+  final List<double> _hBuffer = [];
+  double _hPrev1 = 0.0;  // y[n-1]
 
-    return result;
-  }*/
+  double _sampleRate = 250.0;
 
+  PanTompkinsQRS({double sampleRate = 250.0}) {
+    _sampleRate = sampleRate;
+  }
+
+  void reset() {
+    _lBuffer.clear();
+    _lPrev1 = 0.0;
+    _lPrev2 = 0.0;
+    _hBuffer.clear();
+    _hPrev1 = 0.0;
+  }
+
+  /// ФНЧ: y[n] = 2*y[n-1] - y[n-2] + x[n] - 2*x[n-6] + x[n-12]
+  double _applyLowPassFilter(double val) {
+    _lBuffer.add(val);
+    if (_lBuffer.length > 13) _lBuffer.removeAt(0);
+
+    double xn = _lBuffer[_lBuffer.length - 1];
+    double xn6 = (_lBuffer.length - 7 >= 0) ? _lBuffer[_lBuffer.length - 7] : 0.0;
+    double xn12 = (_lBuffer.length - 13 >= 0) ? _lBuffer[_lBuffer.length - 13] : 0.0;
+
+    double y = 2.0 * _lPrev1 - _lPrev2 + xn - 2.0 * xn6 + xn12;
+
+    _lPrev2 = _lPrev1;
+    _lPrev1 = y;
+    return y;
+  }
+
+  /// ФВЧ: y[n] = 32*x[n-16] - y[n-1] - x[n] + x[n-32]
+  double _applyHighPassFilter(double val) {
+    _hBuffer.add(val);
+    if (_hBuffer.length > 33) _hBuffer.removeAt(0);
+
+    double xn = _hBuffer[_hBuffer.length - 1];
+    double xn16 = (_hBuffer.length - 17 >= 0) ? _hBuffer[_hBuffer.length - 17] : 0.0;
+    double xn32 = (_hBuffer.length - 33 >= 0) ? _hBuffer[_hBuffer.length - 33] : 0.0;
+
+    double y = 32.0 * xn16 - _hPrev1 - xn + xn32;
+
+    _hPrev1 = y;
+    return y;
+  }
+
+  // Дифференцирование
   List<double> derivative(List<double> signal, double fs) {
-    List<double> result = <double>[
-      for (double i = 0; i < signal.length; i++) i
-    ];
+      final int n = signal.length;
+      final List<double> result = List<double>.filled(n, 0.0);
+      final double scale = fs / 8.0;
 
-    for (int index = 0; index < signal.length; index++) {
-      result[index] = 0;
+      // Индексы 0 и 1 – особые случаи (нет полного набора соседей)
+      // index = 0: результат всегда 0 (оставляем как есть)
 
-      if (index >= 1) {
-        result[index] -= 2 * signal[index - 1];
+      if (n > 1) {
+        // index = 1: только -2*signal[0]
+        result[1] = -2.0 * signal[0] * scale;
       }
 
-      if (index >= 2) {
-        result[index] -= signal[index - 2];
+      // Основная часть: от 2 до n-3 включительно (если n >= 5)
+      for (int i = 2; i <= n - 3; i++) {
+        double val = -2.0 * signal[i - 1] - signal[i - 2] + 2.0 * signal[i + 1] + signal[i + 2];
+        result[i] = val * scale;
       }
 
-      if (index >= 2 && index <= signal.length - 2) {
-        result[index] += 2 * signal[index + 1];
+      // Индексы n-2 и n-1 (если они не вошли в основную часть)
+      if (n >= 3) {
+        // index = n-2: условия: index>=1, index>=2, index<=n-2 (да), index<=n-3? Нет, если n-2 > n-3, т.е. всегда нет.
+        // Поэтому только отрицательные члены: -2*signal[i-1] - signal[i-2]
+        int i = n - 2;
+        result[i] = (-2.0 * signal[i - 1] - signal[i - 2]) * scale;
       }
-
-      if (index >= 2 && index <= signal.length - 3) {
-        result[index] += signal[index + 2];
+      if (n >= 4) {
+        // index = n-1: только условия index>=1 и index>=2 (отрицательные члены), положительных нет (т.к. i+1 >= n)
+        int i = n - 1;
+        result[i] = (-2.0 * signal[i - 1] - signal[i - 2]) * scale;
       }
-
-      result[index] = (result[index] * fs) / 8;
-    }
     return result;
   }
 
   List<double> squaring(List<double> signal) {
-    List<double> result = <double>[
-      for (double i = 0; i < signal.length; i++) i
-    ];
+    final int n = signal.length;
+    final List<double> result = List<double>.filled(n, 0.0);
 
     for (int index = 0; index < signal.length; index++) {
       result[index] = signal[index] * signal[index];
@@ -100,727 +126,344 @@ class PanTompkinsQRS {
   }
 
   List<double> movingWindowIntegration(List<double> signal, double fs) {
-    List<double> result = <double>[
-      for (double i = 0; i < signal.length; i++) i
-    ];
-    int winSize = (0.150 * fs).round();
-    double sum = 0;
+    final int n = signal.length;
+    print(fs);
+    final int winSize = (0.150 * fs).round();
+    // Если окно больше сигнала – обработаем все элементы как накопленное среднее
+    final int effectiveWin = winSize > n ? n : winSize;
+    final double invWin = 1.0 / winSize; // или 1.0 / effectiveWin, если менять семантику
 
-    for (int j = 0; j < winSize; j++) {
-      sum += signal[j] / winSize;
-      result[j] = sum;
+    final List<double> result = List<double>.filled(n, 0.0);
+    double sumRaw = 0.0;
+
+    // Первые элементы – накопленное среднее (как в исходном коде)
+    for (int j = 0; j < effectiveWin; j++) {
+      sumRaw += signal[j];
+      result[j] = sumRaw * invWin;
     }
 
-    for (int index = winSize; index < signal.length; index++) {
-      sum += signal[index] / winSize;
-      sum -= signal[index - winSize] / winSize;
-      result[index] = sum;
+    // Основной цикл скользящего окна (только если сигнал длиннее окна)
+    for (int i = winSize; i < n; i++) {
+      sumRaw += signal[i] - signal[i - winSize];
+      result[i] = sumRaw * invWin;
     }
-
     return result;
   }
 
-  (double, List<int>) solve(List<double> signal, int fs) {
-    List<double> inputSignal = List.from(signal);
-    //List<double> bpass = bandPassFilter(inputSignal);
-    List<double> der = derivative(inputSignal, fs.toDouble());
-    List<double> sqr = squaring(der);
-    List<double> mwin = movingWindowIntegration(sqr, fs.toDouble());
-    List<int> peaks = detectPeaks(
-        ecgSingal: signal,
-        fs: fs,
-        integration_signal: mwin,
-        band_pass_signal: signal);
-    double heartRate = (60 * fs) / average(diff(peaks.sublist(1)));
-    return (heartRate, peaks);
-  }
+    // Адаптивные пороги для интегрального сигнала
+    double _SPKI = 0.0;
+    double _NPKI = 0.0;
+    double _THRESHOLDI1 = 0.0;
+    double _THRESHOLDI2 = 0.0;
 
-  // TODO: разобраться с фильтрами и тем, как они влияют на detectPeaks
-  
-  List<int> detectPeaks({
-  required List<double> ecgSingal,
-  required int fs,
-  required List<double> integration_signal,
-  required List<double> band_pass_signal,
-}) {
-  // ---- Объявление всех переменных (были удалены) ----
-  double SPKI = 0.0;
-  double NPKI = 0.0;
-  double SPKF = 0.0;
-  double NPKF = 0.0;
-  double THRESHOLDI1 = 0.0;
-  double THRESHOLDF1 = 0.0;
-  double THRESHOLDI2 = 0.0;
-  double THRESHOLDF2 = 0.0;
-  
-  List<int> possible_peaks = [];
-  List<int> signal_peaks = [];
-  List<int> r_peaks = [];
+    // Адаптивные пороги для фильтрованного сигнала
+    double _SPKF = 0.0;
+    double _NPKF = 0.0;
+    double _THRESHOLDF1 = 0.0;
+    double _THRESHOLDF2 = 0.0;
 
-  // ---- Пункт 1: инициализация порогов по первым 2 секундам ----
-  int initLen = (2 * fs).clamp(0, band_pass_signal.length);
-  List<double> intInit = integration_signal.sublist(0, initLen);
-  List<double> bpInit = band_pass_signal.sublist(0, initLen);
+    // Оценки RR-интервалов
+    final List<double> _rrAvg1 = []; // последние 8 RR (в секундах)
+    final List<double> _rrAvg2 = []; // последние 8 RR в допустимом диапазоне
 
-  List<int> localMaxIdx = [];
-  for (int i = 1; i < initLen - 1; i++) {
-    if (intInit[i] > intInit[i - 1] && intInit[i] > intInit[i + 1]) {
-      localMaxIdx.add(i);
-    }
-  }
-  if (localMaxIdx.isEmpty) {
-    double meanInt = intInit.reduce((a, b) => a + b) / intInit.length;
-    double meanBp = bpInit.reduce((a, b) => a + b) / bpInit.length;
-    SPKI = meanInt * 0.5;
-    NPKI = meanInt * 0.5;
-    SPKF = meanBp * 0.5;
-    NPKF = meanBp * 0.5;
-  } else {
-    List<double> intVals = localMaxIdx.map((i) => intInit[i]).toList();
-    intVals.sort((a, b) => b.compareTo(a));
-    List<double> bpVals = localMaxIdx.map((i) => bpInit[i]).toList();
-    bpVals.sort((a, b) => b.compareTo(a));
+    double _RRLowLimit = 0.0;
+    double _RRHighLimit = 0.0;
+    double _RRMissedLimit = 0.0;
 
-    if (intVals.length >= 2) {
-      SPKI = (intVals[0] + intVals[1]) / 2;
-      NPKI = intVals.sublist(2).reduce((a, b) => a + b) / intVals.sublist(2).length;
-      SPKF = (bpVals[0] + bpVals[1]) / 2;
-      NPKF = bpVals.sublist(2).reduce((a, b) => a + b) / bpVals.sublist(2).length;
-    } else {
-      SPKI = intVals[0];
-      NPKI = 0.0;
-      SPKF = bpVals[0];
-      NPKF = 0.0;
-    }
-  }
+    // Предыдущий наклон для T-волновой дискриминации
+    double _prevSlope = 0.0;
 
-  THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-  THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-  THRESHOLDI2 = 0.5 * THRESHOLDI1;
-  THRESHOLDF2 = 0.5 * THRESHOLDF1;
+    // Время последнего обнаруженного QRS (в индексах) для рефрактерного периода
+    int _lastQRSIndex = -1000;
 
-  int is_T_found = 0;
-  double current_slope = 0;
-  double previous_slope = 0;
-  int window = (0.15 * fs).round();
-
-  // ---- Пункт 4: исправленная свёртка (без сдвига) ----
-  List<double> integration_signal_smooth = convolution([...integration_signal]);
-  List localDiff = diff([...integration_signal_smooth]);
-
-  List<int> FM_peaks = [];
-  for (int i = 1; i < localDiff.length; i++) {
-    if (i - 1 > 2 * fs && localDiff[i - 1] > 0 && localDiff[i] < 0) {
-      FM_peaks.add(i - 1);
-    }
-  }
-
-  // ---- Пункт 2: RR-буфер и лимиты ----
-  List<double> rr_history = [];
-  double RR_LOW_LIMIT = 0.2;
-  double RR_HIGH_LIMIT = 0.8;
-  double RR_MISSED_LIMIT = 1.2;
-
-  // ---- Основной цикл по FM_peaks ----
-  for (int index = 0; index < FM_peaks.length; index++) {
-    int current_peak = FM_peaks[index];
-    int left_limit = max(current_peak - window, 0);
-    int right_limit = min(current_peak + window + 1, band_pass_signal.length);
-
-    int max_index = -1;
-    double max_value = -999999;
-    for (int i = left_limit; i < right_limit; i++) {
-      if (band_pass_signal[i] > max_value) {
-        max_value = band_pass_signal[i];
-        max_index = i;
-      }
-    }
-    if (max_index == -1) continue;
-    possible_peaks.add(max_index);
-
-    double peak_int = integration_signal[current_peak];
-    double peak_bp = band_pass_signal[max_index];
-
-    // ---- Пункт 3: первый пик обрабатываем отдельно ----
-    if (index == 0) {
-      if (peak_int >= THRESHOLDI1) {
-        SPKI = 0.125 * peak_int + 0.875 * SPKI;
-        if (peak_bp > THRESHOLDF1) {
-          SPKF = 0.125 * peak_bp + 0.875 * SPKF;
-          signal_peaks.add(max_index);
-        } else {
-          NPKF = 0.125 * peak_bp + 0.875 * NPKF;
-        }
-      } else if (peak_int > THRESHOLDI2 && peak_int < THRESHOLDI1) {
-        NPKI = 0.125 * peak_int + 0.875 * NPKI;
-        NPKF = 0.125 * peak_bp + 0.875 * NPKF;
-      }
-      THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-      THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-      THRESHOLDI2 = 0.5 * THRESHOLDI1;
-      THRESHOLDF2 = 0.5 * THRESHOLDF1;
-      is_T_found = 0;
-      continue;
+    // Сброс всех порогов в начальное состояние (например, при смене пациента)
+    void resetThresholds() {
+      _SPKI = 0.0;
+      _NPKI = 0.0;
+      _THRESHOLDI1 = 0.0;
+      _THRESHOLDI2 = 0.0;
+      _SPKF = 0.0;
+      _NPKF = 0.0;
+      _THRESHOLDF1 = 0.0;
+      _THRESHOLDF2 = 0.0;
+      _rrAvg1.clear();
+      _rrAvg2.clear();
+      _RRLowLimit = 0.0;
+      _RRHighLimit = 0.0;
+      _RRMissedLimit = 0.0;
+      _prevSlope = 0.0;
+      _lastQRSIndex = -1000;
     }
 
-    // ---- Обработка остальных пиков ----
-    double rr = (FM_peaks[index] - FM_peaks[index - 1]) / fs;
-    rr_history.add(rr);
-    if (rr_history.length > 8) rr_history.removeAt(0);
+    // Основной метод детекции
+    List<int> detectPeaks({
+      required List<double> ecgSignal,
+      required int fs,
+      required List<double> integrationSignal,
+      required List<double> bandPassSignal,
+    }) {
+      // 1. Находим все локальные максимумы в интегральном сигнале
+      final int window = (0.15 * fs).round(); // ширина окна для поиска пика в фильтрованном
+      final List<int> integPeaks = _findLocalMaxima(integrationSignal);
 
-    if (rr_history.length >= 8) {
-      double meanRR = rr_history.reduce((a, b) => a + b) / rr_history.length;
-      RR_LOW_LIMIT = 0.92 * meanRR;
-      RR_HIGH_LIMIT = 1.16 * meanRR;
-      RR_MISSED_LIMIT = 1.66 * meanRR;
-    }
+      // Список для хранения пар (индекс в интегральном, индекс в фильтрованном)
+      final List<_PeakPair> candidatePairs = [];
 
-    // ---- Search-back для пропущенных пиков ----
-    if (rr > RR_MISSED_LIMIT) {
-      int search_back_window = (rr * fs).round();
-      left_limit = current_peak - search_back_window + 1;
-      right_limit = current_peak + 1;
-      int search_back_max_index = -1;
-      double max_int = -999999;
-      for (int i = left_limit; i < right_limit; i++) {
-        if (i < 0 || i >= integration_signal.length) continue;
-        if (integration_signal[i] > THRESHOLDI1 && integration_signal[i] > max_int) {
-          max_int = integration_signal[i];
-          search_back_max_index = i;
-        }
-      }
-      if (search_back_max_index != -1) {
-        SPKI = 0.25 * integration_signal[search_back_max_index] + 0.75 * SPKI;
-        THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-        THRESHOLDI2 = 0.5 * THRESHOLDI1;
-
-        int sb_left = search_back_max_index - (0.15 * fs).round();
-        int sb_right = min(band_pass_signal.length, search_back_max_index);
-        int sb_max_idx = -1;
-        double max_bp = -999999;
-        for (int i = sb_left; i < sb_right; i++) {
-          if (i < 0 || i >= band_pass_signal.length) continue;
-          if (band_pass_signal[i] > THRESHOLDF1 && band_pass_signal[i] > max_bp) {
-            max_bp = band_pass_signal[i];
-            sb_max_idx = i;
+      // Для каждого пика интегрального сигнала ищем соответствующий пик в фильтрованном
+      for (int idx in integPeaks) {
+        int left = (idx - window).clamp(0, bandPassSignal.length - 1);
+        int right = (idx + window + 1).clamp(0, bandPassSignal.length);
+        double maxVal = -double.infinity;
+        int maxIdx = -1;
+        for (int j = left; j < right; j++) {
+          if (bandPassSignal[j] > maxVal) {
+            maxVal = bandPassSignal[j];
+            maxIdx = j;
           }
         }
-        if (sb_max_idx != -1 && band_pass_signal[sb_max_idx] > THRESHOLDF2) {
-          SPKF = 0.25 * band_pass_signal[sb_max_idx] + 0.75 * SPKF;
-          THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-          THRESHOLDF2 = 0.5 * THRESHOLDF1;
-          signal_peaks.add(sb_max_idx);
+        if (maxIdx != -1) {
+          candidatePairs.add(_PeakPair(integIdx: idx, filtIdx: maxIdx));
         }
       }
-    }
 
-    // ---- Подавление T-зубцов ----
-    if (rr > 0.20 && rr < 0.36 && index > 0) {
-      int prev_peak = FM_peaks[index - 1];
-      current_slope = geMax(diff(integration_signal.sublist(
-          current_peak - (fs * 0.075).round(), current_peak + 1)));
-      previous_slope = geMax(diff(integration_signal.sublist(
-          prev_peak - (fs * 0.075).round(), prev_peak + 1)));
-      if (current_slope < 0.5 * previous_slope) {
-        NPKI = 0.125 * peak_int + 0.875 * NPKI;
-        is_T_found = 1;
-      }
-    }
+      // Список финальных fiducial меток (индексы в интегральном сигнале)
+      final List<int> rPeaks = [];
 
-    // ---- Основное решение о пике ----
-    if (is_T_found == 0) {
-      if (peak_int >= THRESHOLDI1) {
-        SPKI = 0.125 * peak_int + 0.875 * SPKI;
-        if (peak_bp > THRESHOLDF1) {
-          SPKF = 0.125 * peak_bp + 0.875 * SPKF;
-          signal_peaks.add(max_index);
+      // Проходим по кандидатам
+      for (int i = 0; i < candidatePairs.length; i++) {
+        final pair = candidatePairs[i];
+        final int integIdx = pair.integIdx;
+        final int filtIdx = pair.filtIdx;
+
+        // ---- Инициализация (первые два комплекса) ----
+        if (i < 2) {
+          // Первые два пика считаем QRS (обучение)
+          _SPKI = 0.5 * integrationSignal[integIdx];
+          _NPKI = 0.5 * _SPKI;
+          _SPKF = 0.5 * bandPassSignal[filtIdx];
+          _NPKF = 0.5 * _SPKF;
+          _updateThresholds();
+          rPeaks.add(integIdx);
+          _lastQRSIndex = integIdx;
+          // Запоминаем наклон для T-волн
+          _prevSlope = _computeMaxSlope(integrationSignal, integIdx, fs);
+          continue;
+        }
+
+        // ---- Проверка рефрактерного периода (200 мс) ----
+        if (integIdx - _lastQRSIndex < (0.2 * fs).round()) {
+          continue; // пропускаем пик
+        }
+
+        // ---- Обновление RR-интервалов и пределов ----
+        _updateRRIntervals(candidatePairs, i, fs);
+
+        // ---- Адаптация порогов при нерегулярном ритме ----
+        if (_rrAvg1.isNotEmpty && _rrAvg1.last < _RRLowLimit) {
+          _THRESHOLDI1 *= 0.5;
+          _THRESHOLDF1 *= 0.5;
+          _THRESHOLDI2 = 0.5 * _THRESHOLDI1;
+          _THRESHOLDF2 = 0.5 * _THRESHOLDF1;
+        }
+
+        // ---- Проверка превышения порогов ----
+        final double integVal = integrationSignal[integIdx];
+        final double filtVal = bandPassSignal[filtIdx];
+
+        bool isQRS = false;
+
+        // Основной порог (первый)
+        if (integVal >= _THRESHOLDI1 && filtVal >= _THRESHOLDF1) {
+          isQRS = true;
+          _SPKI = 0.125 * integVal + 0.875 * _SPKI;
+          _SPKF = 0.125 * filtVal + 0.875 * _SPKF;
+        }
+        // Если не прошёл, но интервал превысил RR_MISSED_LIMIT – запускаем search‑back
+        else if (_rrAvg1.isNotEmpty &&
+            _rrAvg1.last > _RRMissedLimit) {
+          final int searchBack = _performSearchBack(
+            integrationSignal: integrationSignal,
+            bandPassSignal: bandPassSignal,
+            currentIntegIdx: integIdx,
+            fs: fs,
+          );
+          if (searchBack != -1) {
+            // Нашли пропущенный комплекс
+            isQRS = true;
+            // Обновляем SPK с коэффициентом 0.25 (для поиска назад)
+            _SPKI = 0.25 * integrationSignal[searchBack] + 0.75 * _SPKI;
+            _SPKF = 0.25 * bandPassSignal[searchBack] + 0.75 * _SPKF;
+            // Добавляем найденный fiducial
+            rPeaks.add(searchBack);
+            _lastQRSIndex = searchBack;
+            _updateThresholds();
+            // Пропускаем текущий пик (он уже обработан)
+            continue;
+          }
+        }
+
+        // Если QRS подтверждён
+        if (isQRS) {
+          // ---- T-волновая дискриминация (если RR < 360 мс) ----
+          if (_rrAvg1.isNotEmpty &&
+              _rrAvg1.last < 0.36 &&
+              _rrAvg1.last > 0.2) {
+            final double currSlope = _computeMaxSlope(integrationSignal, integIdx, fs);
+            if (currSlope < 0.5 * _prevSlope) {
+              // Это T-волна – обновляем шумовой порог
+              _NPKI = 0.125 * integVal + 0.875 * _NPKI;
+              _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
+              _updateThresholds();
+              continue; // не добавляем как QRS
+            }
+          }
+
+          // Добавляем fiducial метку (пик интегрального сигнала)
+          rPeaks.add(integIdx);
+          _lastQRSIndex = integIdx;
+          _prevSlope = _computeMaxSlope(integrationSignal, integIdx, fs);
+          _updateThresholds();
         } else {
-          NPKF = 0.125 * peak_bp + 0.875 * NPKF;
-        }
-      } else if (peak_int > THRESHOLDI2 && peak_int < THRESHOLDI1) {
-        NPKI = 0.125 * peak_int + 0.875 * NPKI;
-        NPKF = 0.125 * peak_bp + 0.875 * NPKF;
-      }
-    }
-
-    // ---- Обновление порогов ----
-    THRESHOLDI1 = NPKI + 0.25 * (SPKI - NPKI);
-    THRESHOLDF1 = NPKF + 0.25 * (SPKF - NPKF);
-    THRESHOLDI2 = 0.5 * THRESHOLDI1;
-    THRESHOLDF2 = 0.5 * THRESHOLDF1;
-    is_T_found = 0;
-  }
-
-  // ---- Формирование финальных R-пиков ----
-  for (int i in unique(signal_peaks)) {
-    int w = (0.2 * fs).round();
-    int left_limit = i - w;
-    int right_limit = min(i + w + 1, ecgSingal.length);
-    double max_val = -double.infinity;
-    int max_idx = -1;
-    for (int j = left_limit; j < right_limit; j++) {
-      if (j < 0) continue;
-      if (ecgSingal[j] > max_val) {
-        max_val = ecgSingal[j];
-        max_idx = j;
-      }
-    }
-    if (max_idx != -1) r_peaks.add(max_idx);
-  }
-
-  return r_peaks;
-}
-}
-/// Вспомогательные функции
-List<double> convolution(List<double> signal) {
-  List<double> sig1 = [...signal];
-  List<double> sig2 = [for (int i = 0; i < 20; i++) 0.05];
-  List<double> conv = [for (int i = 0; i < (sig1.length - sig2.length); i++) 0];
-  for (int l = 0; l < conv.length; l++) {
-    for (int i = 0; i < sig2.length; i++) {
-      conv[l] += sig1[l - i + sig2.length] * sig2[i];
-    }
-  }
-
-  List<double> d = [for (int i = 0; i < signal.length; i++) 0];
-  for (int l = 0; l < conv.length; l++) {
-    d[l + 11] = conv[l];
-  }
-  return d;
-}
-
-double geMax(List signal) {
-  double largestGeekValue = signal[0];
-
-  for (var i = 0; i < signal.length; i++) {
-    if (signal[i] > largestGeekValue) {
-      largestGeekValue = signal[i];
-    }
-  }
-  return largestGeekValue;
-}
-
-List diff(List signal) {
-  List out = [];
-  if (signal.length < 2) {
-    return [];
-  }
-  for (int i = 0; i < signal.length - 1; i++) {
-    out.add(signal[i + 1] - signal[i]);
-  }
-  return out;
-}
-
-List unique(List arr) {
-  arr.sort();
-  List unique_list = [];
-
-  var last_added;
-
-  for (var element in arr) {
-    if (element != last_added) {
-      unique_list.add(element);
-      last_added = element;
-    }
-  }
-  return unique_list;
-}
-
-List divideList(List signal, int divider) {
-  List out = [];
-  for (int i = 0; i < signal.length; i++) {
-    out.add(signal[i] / divider);
-  }
-  return out;
-}
-
-double average(List signal) {
-  double summ = 0;
-  for (int i = 0; i < signal.length; i++) {
-    summ += signal[i];
-  }
-  return summ / signal.length;
-}
-
-/// Получить полный путь к утилите WFDB
-String getWfdbCommand(String command) {
-  if (wfdbBinPath.isEmpty) {
-    return command;
-  }
-  // Добавляем разделитель пути, если его нет в конце
-  String path = wfdbBinPath;
-  if (!path.endsWith(Platform.pathSeparator)) {
-    path += Platform.pathSeparator;
-  }
-  // На Windows добавляем .exe если нужно
-  if (Platform.isWindows && !command.endsWith('.exe')) {
-    return path + command + '.exe';
-  }
-  return path + command;
-}
-
-/// Чтение частоты дискретизации из файла .hea
-Future<double> getSampleRate(String filePath) async {
-  try {
-    // Нормализуем путь для Windows
-    String normalizedPath = filePath.replaceAll('/', '\\');
-    if (normalizedPath.endsWith('.hea')) {
-      normalizedPath = normalizedPath.substring(0, normalizedPath.length - 4);
-    }
-    
-    final heaFile = File('$normalizedPath.hea');
-    if (!await heaFile.exists()) {
-      print('Предупреждение: файл .hea не найден, используется частота по умолчанию 360');
-      return 360.0;
-    }
-
-    final content = await heaFile.readAsString();
-    final lines = content.split('\n');
-    
-    for (final line in lines) {
-      if (line.trim().isEmpty) continue;
-      
-      final parts = line.trim().split(RegExp(r'\s+'));
-      if (parts.length >= 3) {
-        final sampleRate = double.tryParse(parts[2]);
-        if (sampleRate != null && sampleRate > 0) {
-          return sampleRate;
+          // Пик не является QRS – обновляем шумовые оценки
+          _NPKI = 0.125 * integVal + 0.875 * _NPKI;
+          _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
+          _updateThresholds();
         }
       }
-      break;
+
+      return rPeaks;
     }
 
-    print('Предупреждение: не удалось определить частоту дискретизации, используется 360');
-    return 360.0;
-  } catch (e) {
-    print('Ошибка чтения файла .hea: $e');
-    return 360.0;
-  }
-}
+    // ---- Вспомогательные методы ----
 
-/// Загрузка данных ЭКГ с помощью rdsamp
-Future<List<double>> loadECGDataWithRDSamp(String folderPath, String recordName, int channel) async {
-  try {
-    // Убеждаемся, что файл физически существует по указанному пути
-    final datFile = File('$folderPath\\$recordName.dat');
-    if (!await datFile.exists()) {
-      print('Ошибка: файл .dat не найден: ${datFile.path}');
-      return [];
+    List<int> _findLocalMaxima(List<double> signal) {
+      final List<int> peaks = [];
+      for (int i = 1; i < signal.length - 1; i++) {
+        if (signal[i] > signal[i - 1] && signal[i] > signal[i + 1]) {
+          peaks.add(i);
+        }
+      }
+      return peaks;
     }
 
-    final rdsampCmd = getWfdbCommand('rdsamp');
-    print('Запуск rdsamp для записи: $recordName в папке: $folderPath');
+    void _updateThresholds() {
+      _THRESHOLDI1 = _NPKI + 0.25 * (_SPKI - _NPKI);
+      _THRESHOLDI2 = 0.5 * _THRESHOLDI1;
+      _THRESHOLDF1 = _NPKF + 0.25 * (_SPKF - _NPKF);
+      _THRESHOLDF2 = 0.5 * _THRESHOLDF1;
+    }
 
-    // Используем Process.run с установкой окружения и рабочей директории
-    final result = await Process.run(
-      rdsampCmd,
-      // ВАЖНО: передаем только имя записи, а не полный путь
-      ['-r', recordName, '-f', '0', '-t', 'end', '-p', '-v'],
-      runInShell: true,
-      workingDirectory: folderPath, // Выполняем команду прямо в папке с БД
-      environment: {'WFDB': '.'},    // Принудительно заставляем искать файлы локально
+    void _updateRRIntervals(List<_PeakPair> pairs, int currentIdx, int fs) {
+      if (currentIdx < 1) return;
+      final double rr = (pairs[currentIdx].integIdx - pairs[currentIdx - 1].integIdx) / fs;
+      _rrAvg1.add(rr);
+      if (_rrAvg1.length > 8) _rrAvg1.removeAt(0);
+
+      // Обновление RR_AVERAGE2 (только RR в пределах 92–116% от текущего среднего)
+      if (_rrAvg2.length >= 8) {
+        final double avg2 = _rrAvg2.reduce((a, b) => a + b) / _rrAvg2.length;
+        _RRLowLimit = 0.92 * avg2;
+        _RRHighLimit = 1.16 * avg2;
+        _RRMissedLimit = 1.66 * avg2;
+      }
+      if (_rrAvg2.isEmpty ||
+          (rr >= _RRLowLimit && rr <= _RRHighLimit)) {
+        _rrAvg2.add(rr);
+        if (_rrAvg2.length > 8) _rrAvg2.removeAt(0);
+      }
+    }
+
+    int _performSearchBack({
+      required List<double> integrationSignal,
+      required List<double> bandPassSignal,
+      required int currentIntegIdx,
+      required int fs,
+    }) {
+      // Ищем пик в интервале [currentIntegIdx - RR_MISSED_LIMIT*fs, currentIntegIdx]
+      final int searchWindow = (_RRMissedLimit * fs).round();
+      int start = (currentIntegIdx - searchWindow).clamp(0, integrationSignal.length - 1);
+      int end = currentIntegIdx.clamp(0, integrationSignal.length - 1);
+
+      int bestIntegIdx = -1;
+      double maxVal = -double.infinity;
+      // Ищем пик между нижним и верхним порогами (нижний порог используется)
+      for (int i = start; i <= end; i++) {
+        final double val = integrationSignal[i];
+        if (val > _THRESHOLDI2 && val < _THRESHOLDI1 && val > maxVal) {
+          maxVal = val;
+          bestIntegIdx = i;
+        }
+      }
+      if (bestIntegIdx == -1) return -1;
+
+      // Проверяем соответствующий пик в фильтрованном сигнале (нижний порог)
+      int leftF = (bestIntegIdx - (0.15 * fs).round()).clamp(0, bandPassSignal.length - 1);
+      int rightF = (bestIntegIdx + (0.15 * fs).round() + 1).clamp(0, bandPassSignal.length);
+      int bestFiltIdx = -1;
+      double maxFilt = -double.infinity;
+      for (int j = leftF; j < rightF; j++) {
+        if (bandPassSignal[j] > _THRESHOLDF2 && bandPassSignal[j] > maxFilt) {
+          maxFilt = bandPassSignal[j];
+          bestFiltIdx = j;
+        }
+      }
+      if (bestFiltIdx == -1) return -1;
+
+      return bestIntegIdx; // возвращаем fiducial как пик интегрального сигнала
+    }
+
+    double _computeMaxSlope(List<double> signal, int idx, int fs) {
+      final int half = (0.075 * fs).round();
+      int start = (idx - half).clamp(0, signal.length - 1);
+      int end = (idx + half).clamp(0, signal.length - 1);
+      double maxSlope = 0.0;
+      for (int i = start; i < end; i++) {
+        final double diff = signal[i + 1] - signal[i];
+        if (diff > maxSlope) maxSlope = diff;
+      }
+      return maxSlope;
+    }
+
+  /// Основной метод обработки сигнала (экземплярный)
+  List<int> process(List<double> signal) {
+    if (signal.isEmpty) return [];
+
+    // Сброс всех внутренних состояний (буферы фильтров + пороги)
+    reset();
+    resetThresholds();
+
+    // 1. Полосовая фильтрация (каскад ФНЧ + ФВЧ)
+    final List<double> filtered = List.filled(signal.length, 0.0);
+    for (int i = 0; i < signal.length; i++) {
+      double low = _applyLowPassFilter(signal[i]);
+      filtered[i] = _applyHighPassFilter(low) / 1152.0; // общий gain = 36*32
+    }
+
+    // 2. Производная
+    final List<double> derivated = derivative(filtered, _sampleRate);
+
+    // 3. Возведение в квадрат
+    final List<double> squared = squaring(derivated);
+
+    // 4. Скользящее интегрирование (окно 150 мс)
+    final List<double> integrated = movingWindowIntegration(squared, _sampleRate);
+
+    // 5. Детекция пиков
+    final List<int> peaks = detectPeaks(
+      ecgSignal: signal,          // не используется внутри, но оставлен для совместимости
+      fs: _sampleRate.round(),
+      integrationSignal: integrated,
+      bandPassSignal: filtered,
     );
 
-    if (result.exitCode != 0) {
-      print('Ошибка выполнения rdsamp (код ${result.exitCode}): ${result.stderr}');
-      return [];
-    }
-
-    return _parseRDSampOutput(result.stdout.toString(), channel);
-  } catch (e) {
-    print('Ошибка выполнения rdsamp: $e');
-    return [];
+    // Возвращаем только индексы R-пиков
+    return peaks;
   }
 }
 
-List<double> _parseRDSampOutput(String output, int channel) {
-  final lines = output.split('\n')
-      .where((line) => line.trim().isNotEmpty)
-      .toList();
-
-  if (lines.isEmpty) {
-    print('Вывод rdsamp пуст');
-    return [];
+  // Вспомогательный класс для хранения пары индексов
+  class _PeakPair {
+    final int integIdx;
+    final int filtIdx;
+    _PeakPair({required this.integIdx, required this.filtIdx});
   }
-
-  final signal = <double>[];
-
-  for (final line in lines) {
-    try {
-      final parts = line.trim().split(RegExp(r'\s+'));
-      if (parts.length < channel + 2) continue;
-
-      final value = double.parse(parts[channel + 1]);
-
-      if (value.isFinite) {
-        signal.add(value);
-      }
-    } catch (e) {
-      continue;
-    }
-  }
-  return signal;
-}
-
-/// Запись пиков в аннотационный файл с помощью wrann
-Future<void> writePeaksWithWRAnn(String folderPath, String recordName, List<int> peaks, int fs) async {
-  try {
-    final datFile = File('$folderPath\\$recordName.dat');
-    if (!await datFile.exists()) {
-      print('Ошибка: файл .dat не найден: ${datFile.path}');
-      return;
-    }
-
-    final content = StringBuffer();
-    for (int peak in peaks) {
-      double timeInSeconds = peak / fs;
-      int minutes = timeInSeconds ~/ 60;
-      double seconds = timeInSeconds % 60;
-      int wholeSeconds = seconds.floor();
-      int milliseconds = ((seconds - wholeSeconds) * 1000).round();
-      
-      String formattedTime = '${minutes.toString().padLeft(1, '0')}:${wholeSeconds.toString().padLeft(2, '0')}.${milliseconds.toString().padLeft(3, '0')}';
-      content.writeln('$formattedTime       $peak     N');
-    }
-    
-    final wrannCmd = getWfdbCommand('wrann');
-    
-    // Используем Process.start с установкой окружения и рабочей директории
-    final process = await Process.start(
-      wrannCmd,
-      // ВАЖНО: передаем только имя записи
-      ['-r', recordName, '-a', 'gqrs'],
-      mode: ProcessStartMode.normal,
-      workingDirectory: folderPath, // Переходим в папку с БД
-      environment: {'WFDB': '.'},    // Задаем переменную окружения
-    );
-
-    process.stdin.write(content.toString());
-    await process.stdin.close();
-
-    final output = await process.stdout.transform(utf8.decoder).join();
-    final stderr = await process.stderr.transform(utf8.decoder).join();
-
-    final exitCode = await process.exitCode;
-
-    if (exitCode != 0) {
-      print('Ошибка wrann (код $exitCode): $stderr');
-      if (stderr.isNotEmpty) print('stderr: $stderr');
-      if (output.isNotEmpty) print('stdout: $output');
-      return;
-    }
-    print('Аннотации gqrs успешно записаны для $recordName');
-  } catch (e) {
-    print('Ошибка записи аннотационного файла: $e');
-  }
-}
-
-/// Проверка доступности rdsamp
-Future<bool> isRDSampAvailable() async {
-  try {
-    return true;
-  } catch (e) {
-    try {
-      if (Platform.isWindows) {
-        final result = await Process.run('where', ['rdsamp']);
-        return result.exitCode == 0;
-      } else {
-        final result = await Process.run('which', ['rdsamp']);
-        return result.exitCode == 0;
-      }
-    } catch (e2) {
-      return false;
-    }
-  }
-}
-
-/// Проверка доступности wrann
-Future<bool> isWRAnnAvailable() async {
-  try {
-    return true;
-  } catch (e) {
-    try {
-      if (Platform.isWindows) {
-        final result = await Process.run('where', ['wrann']);
-        return result.exitCode == 0;
-      } else {
-        final result = await Process.run('which', ['wrann']);
-        return result.exitCode == 0;
-      }
-    } catch (e2) {
-      return false;
-    }
-  }
-}
-
-/// Обработка одной записи
-Future<void> processRecording(String folderPath, String recordNumber, int channel) async {
-  // Нормализуем пути
-  String normalizedFolder = folderPath.replaceAll('/', '\\');
-  // Убираем возможный trailing slash
-  if (normalizedFolder.endsWith('\\')) {
-    normalizedFolder = normalizedFolder.substring(0, normalizedFolder.length - 1);
-  }
-  
-  print('Обработка: $normalizedFolder, запись $recordNumber, канал $channel');
-  
-  // Проверяем существование .dat файла
-  final datFile = File('$normalizedFolder\\$recordNumber.dat');
-  if (!await datFile.exists()) {
-    print('Ошибка: файл $normalizedFolder\\$recordNumber.dat не найден');
-    return;
-  }
-
-  // Получаем частоту дискретизации
-  final sampleRate = await getSampleRate('$normalizedFolder\\$recordNumber');
-  final fs = sampleRate.round();
-
-  // Загружаем данные через rdsamp
-  final ecgData = await loadECGDataWithRDSamp(folderPath, recordNumber, channel);
-  if (ecgData.isEmpty) {
-    print('Ошибка: данные не загружены');
-    return;
-  }
-
-  print('Загружено ${ecgData.length} отсчётов, частота $fs Гц');
-
-  // Расчитываем коэффициенты фильтров
-  calculateFilterCoefficients(sampleRate);
-
-  // Применяем фильтры
-  List<double> filteredData = [for (double i in ecgData) applyHighPassFilter(i)];
-  filteredData = [for (double i in filteredData) applyLowPassFilter(i)];
-
-  // Детектируем пики
-  final detector = PanTompkinsQRS();
-  late List<int> peaks;
-  late double heartRate;
-  (heartRate, peaks) = detector.solve(filteredData, fs);
-  
-  print('Результаты: ${heartRate.toStringAsFixed(2)} BPM, ${peaks.length} пиков');
-
-  // Сохраняем пики в .gqrs аннотацию
-  await writePeaksWithWRAnn(folderPath, recordNumber, peaks, fs);
-
-  // Сбрасываем состояние фильтров
-  hprevFilterd = 0.0;
-  hprevUnFiltered = 0.0;
-  hprevprevUnfiltered = 0.0;
-  hprevprevFilterd = 0.0;
-  lprevFilterd = 0.0;
-  lprevUnFiltered = 0.0;
-  lprevprevUnfiltered = 0.0;
-  lprevprevFilterd = 0.0;
-
-  bhp = [];
-  ahp = [];
-  blp = [];
-  alp = [];
-}
-
-void main(List<String> args) async {
-  // Проверяем аргументы командной строки
-  if (args.length < 3) {
-    print('Использование: dart pan-tompkins.dart <путь_к_папке> <номер_записи> <канал>');
-    print('Пример: dart pan-tompkins.dart ./assets/ECG_DB/AHADB 1201 1');
-    print('');
-    print('Аргументы:');
-    print('  путь_к_папке   - Путь к папке с файлами записи');
-    print('  номер_записи   - Номер записи (например, 1201)');
-    print('  канал          - Номер канала (0 или 1)');
-    print('');
-    print('Программа:');
-    print('  - Загружает данные через rdsamp');
-    print('  - Детектирует R-пики алгоритмом Pan-Tompkins');
-    print('  - Сохраняет пики в .gqrs аннотацию с помощью wrann');
-    print('');
-    print('Для указания пути к утилитам WFDB установите переменную wfdbBinPath');
-    print('Например: wfdbBinPath = "C:/WFDB/bin/";');
-    exit(1);
-  }
-
-  final folderPath = args[0];
-  final recordNumber = args[1];
-  final channel = int.parse(args[2]);
-
-  await processRecording(folderPath, recordNumber, channel);
-}
-
-/// Переменные для фильтра высоких частот
-double hprevFilterd = 0.0;
-double hprevUnFiltered = 0.0;
-double hprevprevUnfiltered = 0.0;
-double hprevprevFilterd = 0.0;
-
-List<double> bhp = [];
-List<double> ahp = [];
-
-/// Переменные для фильтра низких частот
-double lprevFilterd = 0.0;
-double lprevUnFiltered = 0.0;
-double lprevprevUnfiltered = 0.0;
-double lprevprevFilterd = 0.0;
-
-List<double> blp = [];
-List<double> alp = [];
-
-void calculateFilterCoefficients(double sampleRate) {
-  // Округляем до ближайшего целого, чтобы избежать ошибок округления double
-  final int rate = sampleRate.round();
-
-  if (rate == 125) {
-    // --- ФНЧ (Low-Pass) 125 Гц ---
-    blp = [0.35034638, 0.70069276, 0.35034638];
-    alp = [-0.22115344, -0.18023207];
-
-    // --- ФВЧ (High-Pass) 125 Гц ---
-    bhp = [0.96851735, -1.93703469, 0.96851735];
-    ahp = [1.93604329, -0.9380261];
-    
-  } else if (rate == 250) {
-    // --- ФНЧ (Low-Pass) 250 Гц ---
-    blp = [0.11735104, 0.23470207, 0.11735104];
-    alp = [0.82523238, -0.29463653];
-
-    // --- ФВЧ (High-Pass) 250 Гц ---
-    bhp = [0.98413284, -1.96826569, 0.98413284];
-    ahp = [1.96801391, -0.96851747];
-    
-  } else if (rate == 360) {
-    // --- ФНЧ (Low-Pass) 360 Гц ---
-    blp = [0.06433216, 0.12866431, 0.06433216];
-    alp = [1.16557175, -0.42290037];
-
-    // --- ФВЧ (High-Pass) 360 Гц ---
-    bhp = [0.98895425, -1.9779085, 0.98895425];
-    ahp = [1.97778648, -0.97803051];
-  }
-}
-
-/// Фильтр низких частот
-double applyLowPassFilter(double val) {
-  double y = blp[0] * val +
-      alp[0] * lprevFilterd +
-      blp[1] * lprevUnFiltered +
-      alp[1] * lprevprevFilterd +
-      blp[2] * lprevprevUnfiltered;
-  lprevprevFilterd = lprevFilterd;
-  lprevFilterd = y;
-  lprevprevUnfiltered = lprevUnFiltered;
-  lprevUnFiltered = val;
-  return y;
-}
-
-/// Фильтр высоких частот
-double applyHighPassFilter(double val) {
-  double y = bhp[0] * val +
-      ahp[0] * hprevFilterd +
-      bhp[1] * hprevUnFiltered +
-      ahp[1] * hprevprevFilterd +
-      bhp[2] * hprevprevUnfiltered;
-  hprevprevFilterd = hprevFilterd;
-  hprevFilterd = y;
-  hprevprevUnfiltered = hprevUnFiltered;
-  hprevUnFiltered = val;
-  return y;
-}
