@@ -1,4 +1,4 @@
-set WFDB=C:\Users\Public\Work\ECG_DB\AHADB;
+set WFDB=C:\Users\Public\Work\QRS-detector\ECG_DB\AHADB;
 : file: AHA-valid.bat	ecgeval		30 July 2026
 :
 : Evaluate test annotator gqrs on the AHA DB

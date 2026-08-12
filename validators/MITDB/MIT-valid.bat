@@ -1,4 +1,4 @@
-set WFDB=C:\Users\Public\Work\ECG_DB\MITDB;
+set WFDB=C:\Users\Public\Work\QRS-detector\ECG_DB\MITDB;
 : file: MIT-valid.bat	ecgeval		30 July 2026
 :
 : Evaluate test annotator gqrs on the MIT DB

@@ -1,4 +1,4 @@
-set WFDB=C:\Users\Public\Work\ECG_DB\CUDB;
+set WFDB=C:\Users\Public\Work\QRS-detector\ECG_DB\CUDB;
 : file: CU-valid.bat	ecgeval		30 July 2026
 :
 : Evaluate test annotator gqrs on the CU DB

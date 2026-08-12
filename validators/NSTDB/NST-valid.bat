@@ -1,4 +1,4 @@
-set WFDB=C:\Users\Public\Work\ECG_DB\NSTDB;
+set WFDB=C:\Users\Public\Work\QRS-detector\ECG_DB\NSTDB;
 : file: NST-valid.bat	ecgeval		3 August 2026
 :
 : Evaluate test annotator gqrs on the NST DB
