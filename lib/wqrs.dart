@@ -2,7 +2,7 @@
 import 'dart:math';
 
 /// Класс для обнаружения QRS комплексов на основе алгоритма wqrs
-/// Адаптирован для сигналов в милливольтах
+/// Работает с сырыми АЦП-данными (оригинальный режим)
 class WQRSDetector {
   // Параметры алгоритма
   final double _sampleRate;
@@ -45,23 +45,22 @@ class WQRSDetector {
   final List<int> _detections = [];
   final List<int> _jPoints = [];
   
-  // Параметры масштабирования
-  final double _gain;  // Усиление в АЦП/мВ
+  // Параметры
+  final double _gain;
   final bool _debugMode;
+  final bool _inputIsRaw;  // true - сырые АЦП, false - мВ
   int _samplesProcessed = 0;
-  
-  // Константы для преобразования
-  static const int ADC_PER_MV = 200;  // Стандартное усиление ЭКГ
   
   WQRSDetector({
     required double sampleRate,
-    double gain = 200.0,  // АЦП/мВ (по умолчанию 200)
+    double gain = 200.0,
     int powerLineFreq = 50,
     int minThreshold = 100,
     double eyeClosingPeriod = 0.25,
     double maxQRSWidth = 0.13,
     double ndp = 2.5,
     bool debugMode = false,
+    bool inputIsRaw = true,  // По умолчанию работаем с сырыми данными
   }) : _sampleRate = sampleRate,
        _gain = gain,
        _minThreshold = minThreshold,
@@ -71,9 +70,9 @@ class WQRSDetector {
        _expectPeriod = (ndp * sampleRate).round(),
        _ltWindow = (maxQRSWidth * sampleRate).round().clamp(1, 256),
        _lfsc = 1.25 * gain * gain / sampleRate,
-       _debugMode = debugMode {
+       _debugMode = debugMode,
+       _inputIsRaw = inputIsRaw {
     
-    // Инициализация буфера
     int initialValue = sqrt(_lfsc).round();
     for (int i = 0; i < _BUFFER_SIZE; i++) {
       _ebuf[i] = initialValue;
@@ -82,7 +81,8 @@ class WQRSDetector {
     if (_debugMode) {
       print('=== WQRS Detector Initialized ===');
       print('Sample Rate: $_sampleRate Hz');
-      print('Gain: $_gain ADC/mV');
+      print('Gain: $_gain ADC/ед.');
+      print('Input mode: ${_inputIsRaw ? "RAW ADC" : "mV"}');
       print('LPn: $_lpn, LP2n: $_lp2n');
       print('Eye Closing Samples: $_eyeClosingSamples');
       print('LT Window: $_ltWindow');
@@ -119,12 +119,18 @@ class WQRSDetector {
     _samplesProcessed = 0;
   }
   
-  /// Преобразование сигнала из мВ в АЦП-единицы
-  int _mvToAdc(double value) {
-    return (value * _gain).round();
+  /// Преобразование входного значения в АЦП (если пришли мВ)
+  int _toAdc(dynamic value) {
+    if (_inputIsRaw) {
+      // Если данные уже в АЦП
+      return value is int ? value : value.round();
+    } else {
+      // Если данные в мВ, конвертируем
+      return (value * _gain).round();
+    }
   }
   
-  int _ltsamp(int t, List<double> signal) {
+  int _ltsamp(int t, List<int> signal) {
     int dy;
     int v0, v1, v2;
     int et;
@@ -148,12 +154,12 @@ class WQRSDetector {
       _yn2 = _yn1;
       _yn1 = _yn;
       
-      // Получение отсчетов с преобразованием в АЦП
-      v0 = (_tt >= 0 && _tt < signal.length) ? _mvToAdc(signal[_tt]) : 0;
-      v1 = (_tt - _lpn >= 0 && _tt - _lpn < signal.length) ? _mvToAdc(signal[_tt - _lpn]) : 0;
-      v2 = (_tt - _lp2n >= 0 && _tt - _lp2n < signal.length) ? _mvToAdc(signal[_tt - _lp2n]) : 0;
+      // Получение отсчетов (уже в АЦП)
+      v0 = (_tt >= 0 && _tt < signal.length) ? signal[_tt] : 0;
+      v1 = (_tt - _lpn >= 0 && _tt - _lpn < signal.length) ? signal[_tt - _lpn] : 0;
+      v2 = (_tt - _lp2n >= 0 && _tt - _lp2n < signal.length) ? signal[_tt - _lp2n] : 0;
       
-      // Фильтр низких частот
+      // Фильтр низких частот (оригинальный)
       _yn = 2 * _yn1 - _yn2 + v0 - 2 * v1 + v2;
       
       // Производная
@@ -172,7 +178,7 @@ class WQRSDetector {
     return _lbuf[t & (_BUFFER_SIZE - 1)];
   }
   
-  bool processSample(double sample, List<double> signal) {
+  bool processSample(int sample, List<int> signal) {
     int t = _samplesProcessed;
     
     int lt = _ltsamp(t, signal);
@@ -265,7 +271,6 @@ class WQRSDetector {
         
         // Регистрация обнаружения
         if (!_isLearning && tpq >= 0 && tpq < signal.length) {
-          // Проверка, не слишком ли близко к предыдущему обнаружению
           if (_detections.isEmpty || tpq - _detections.last > _eyeClosingSamples ~/ 2) {
             _detections.add(tpq);
             _lastDetection = t;
@@ -313,21 +318,25 @@ class WQRSDetector {
     return false;
   }
   
-  List<int> detect(List<double> signal) {
+  List<int> detect(List<int> signal) {
     if (_debugMode) {
       print('=== Starting Detection ===');
       print('Signal length: ${signal.length} samples');
+      print('Input mode: ${_inputIsRaw ? "RAW ADC" : "mV"}');
       
       if (signal.isNotEmpty) {
-        double minSignal = signal.reduce((a, b) => a < b ? a : b);
-        double maxSignal = signal.reduce((a, b) => a > b ? a : b);
-        print('Signal range: ${minSignal.toStringAsFixed(2)} to ${maxSignal.toStringAsFixed(2)} mV');
+        int minSignal = signal.reduce((a, b) => a < b ? a : b);
+        int maxSignal = signal.reduce((a, b) => a > b ? a : b);
+        print('Signal range: $minSignal to $maxSignal ADC');
+        print('Signal amplitude: ${maxSignal - minSignal} ADC');
         
-        // Расчет ожидаемой амплитуды в АЦП
-        double amplitude = maxSignal - minSignal;
-        double expectedAdcAmplitude = amplitude * _gain;
-        print('Expected ADC amplitude: ${expectedAdcAmplitude.toStringAsFixed(0)}');
-        print('Recommended gain: ${(1000 / amplitude).toStringAsFixed(1)} ADC/mV');
+        if (_inputIsRaw) {
+          // Для сырых данных проверяем, что амплитуда соответствует ожидаемой
+          if (maxSignal - minSignal < 100) {
+            print('WARNING: Signal amplitude is very small!');
+            print('  Expected ADC amplitude for ECG: ~2000-5000');
+          }
+        }
       }
     }
     
@@ -394,20 +403,19 @@ class WQRSDetector {
       print('=== Detection Complete ===');
       print('Total detections: ${_detections.length}');
       
-      // Расчет ожидаемого количества QRS
       double durationMinutes = signal.length / _sampleRate / 60.0;
-      int expectedBeats = (durationMinutes * 75).round(); // 75 ударов в минуту
+      int expectedBeats = (durationMinutes * 75).round();
       print('Signal duration: ${durationMinutes.toStringAsFixed(1)} minutes');
       print('Expected beats: ~$expectedBeats (at 75 BPM)');
       
       if (_detections.length > expectedBeats * 2) {
         print('WARNING: Too many detections! Expected ~$expectedBeats, got ${_detections.length}');
-        print('  Try increasing gain or minThreshold');
+        print('  Try increasing minThreshold');
       } else if (_detections.length < expectedBeats ~/ 2) {
         print('WARNING: Too few detections! Expected ~$expectedBeats, got ${_detections.length}');
-        print('  Try decreasing gain or minThreshold');
+        print('  Try decreasing minThreshold');
       } else {
-        print('Detection rate looks reasonable!');
+        print('✓ Detection rate looks reasonable!');
       }
       
       if (_detections.isNotEmpty) {
@@ -434,6 +442,7 @@ class WQRSDetector {
       'isLearning': _isLearning,
       'lastDetection': _lastDetection,
       'gain': _gain,
+      'inputIsRaw': _inputIsRaw,
     };
   }
 }
