@@ -1,6 +1,6 @@
 // lib/wqrs_detector.dart
 import 'dart:math';
-
+import 'dart:io';
 /// Класс для обнаружения QRS комплексов на основе алгоритма wqrs
 /// Работает с сырыми АЦП-данными (оригинальный режим)
 class WQRSDetector {
@@ -28,8 +28,8 @@ class WQRSDetector {
   int _aet = 0;
   
   // Пороги
-  int _t0 = 0;
-  int _ta = 0;
+  double _t0 = 0;  // Изменено на double для точности
+  double _ta = 0;  // Изменено на double для точности
   int _t1 = 0;
   
   // Состояние обучения
@@ -48,8 +48,12 @@ class WQRSDetector {
   // Параметры
   final double _gain;
   final bool _debugMode;
-  final bool _inputIsRaw;  // true - сырые АЦП, false - мВ
+  final bool _inputIsRaw;
   int _samplesProcessed = 0;
+  
+  // Для отслеживания прогресса
+  int _minutes = 0;
+  int _nextMinute = 0;
   
   WQRSDetector({
     required double sampleRate,
@@ -60,7 +64,7 @@ class WQRSDetector {
     double maxQRSWidth = 0.13,
     double ndp = 2.5,
     bool debugMode = false,
-    bool inputIsRaw = true,  // По умолчанию работаем с сырыми данными
+    bool inputIsRaw = true,
   }) : _sampleRate = sampleRate,
        _gain = gain,
        _minThreshold = minThreshold,
@@ -73,6 +77,7 @@ class WQRSDetector {
        _debugMode = debugMode,
        _inputIsRaw = inputIsRaw {
     
+    // Инициализация буфера ebuf как в оригинале
     int initialValue = sqrt(_lfsc).round();
     for (int i = 0; i < _BUFFER_SIZE; i++) {
       _ebuf[i] = initialValue;
@@ -117,15 +122,14 @@ class WQRSDetector {
     _detections.clear();
     _jPoints.clear();
     _samplesProcessed = 0;
+    _minutes = 0;
+    _nextMinute = (8 * _sampleRate).round(); // 8 секунд как в оригинале
   }
   
-  /// Преобразование входного значения в АЦП (если пришли мВ)
   int _toAdc(dynamic value) {
     if (_inputIsRaw) {
-      // Если данные уже в АЦП
       return value is int ? value : value.round();
     } else {
-      // Если данные в мВ, конвертируем
       return (value * _gain).round();
     }
   }
@@ -154,7 +158,6 @@ class WQRSDetector {
       _yn2 = _yn1;
       _yn1 = _yn;
       
-      // Получение отсчетов (уже в АЦП)
       v0 = (_tt >= 0 && _tt < signal.length) ? signal[_tt] : 0;
       v1 = (_tt - _lpn >= 0 && _tt - _lpn < signal.length) ? signal[_tt - _lpn] : 0;
       v2 = (_tt - _lp2n >= 0 && _tt - _lp2n < signal.length) ? signal[_tt - _lp2n] : 0;
@@ -178,57 +181,31 @@ class WQRSDetector {
     return _lbuf[t & (_BUFFER_SIZE - 1)];
   }
   
-  bool processSample(int sample, List<int> signal) {
-    int t = _samplesProcessed;
-    
+  // Новый метод для обработки одного семпла, возвращает true если обнаружен QRS
+  bool _processSample(int sample, List<int> signal, int t, bool isLearningPhase) {
     int lt = _ltsamp(t, signal);
-    _samplesProcessed++;
     
     // === ФАЗА ОБУЧЕНИЯ ===
-    if (_isLearning) {
-      _t0 += lt;
-      
-      int learningEnd = (8.0 * _sampleRate).round().clamp(1, _BUFFER_SIZE ~/ 2);
-      
-      if (t >= learningEnd) {
-        _t0 ~/= (t + 1);
-        _ta = 3 * _t0;
-        _t1_learning = 2 * _t0;
-        
-        if (_debugMode) {
-          print('=== Learning Complete ===');
-          print('T0: $_t0');
-          print('Ta: $_ta');
-          print('T1 (learning): $_t1_learning');
-          print('=========================');
-        }
-        
-        _isLearning = false;
-        return false;
-      }
-      
+    if (isLearningPhase) {
+      // В оригинале T1 = 2*T0 во время обучения, но мы не детектим
       return false;
     }
     
     // === ФАЗА ДЕТЕКЦИИ ===
-    int currentT1 = _isLearning ? _t1_learning : (_ta ~/ 3);
-    
     // Проверка рефрактерного периода
     if (_inRefractory) {
-      if (t - _lastDetection >= _eyeClosingSamples) {
-        _inRefractory = false;
-      } else {
-        return false;
-      }
+      // В оригинале просто пропускаем семплы через t += EyeClosing
+      // Здесь мы эмулируем это через проверку
+      return false;
     }
     
     // Отладочный вывод
     if (_debugMode && t % 5000 == 0) {
-      print('Sample $t: LT=$lt, T1=$currentT1, detections=${_detections.length}');
+      print('Sample $t: LT=$lt, T1=$_t1, detections=${_detections.length}');
     }
     
     // Сравнение с порогом
-    if (lt > currentT1) {
+    if (lt > _t1) {
       _timer = 0;
       
       // Поиск максимума в окне вперед
@@ -249,7 +226,7 @@ class WQRSDetector {
       
       // Проверка наличия QRS
       if (maxVal > minVal + 10) {
-        // Поиск начала QRS
+        // Поиск начала QRS (PQ junction)
         int onset = (maxVal ~/ 100) + 2;
         int tpq = t - 5;
         
@@ -269,8 +246,8 @@ class WQRSDetector {
           }
         }
         
-        // Регистрация обнаружения
-        if (!_isLearning && tpq >= 0 && tpq < signal.length) {
+        // Регистрация обнаружения (только если не в режиме обучения)
+        if (tpq >= 0 && tpq < signal.length) {
           if (_detections.isEmpty || tpq - _detections.last > _eyeClosingSamples ~/ 2) {
             _detections.add(tpq);
             _lastDetection = t;
@@ -294,11 +271,13 @@ class WQRSDetector {
             }
             
             // Адаптация порогов
-            _ta += (maxVal - _ta) ~/ 10;
-            _t1 = _ta ~/ 3;
+            _ta += (maxVal - _ta) / 10;
+            _t1 = (_ta / 3).round();
           }
         }
         
+        // В оригинале здесь t += EyeClosing (пропуск семплов)
+        // Мы эмулируем это через флаг рефрактерности и возвращаем true
         return true;
       }
     } else {
@@ -306,7 +285,7 @@ class WQRSDetector {
       _timer++;
       if (_timer > _expectPeriod && _ta > _minThreshold) {
         _ta--;
-        _t1 = _ta ~/ 3;
+        _t1 = (_ta / 3).round();
         _timer = 0;
         
         if (_debugMode && _ta % 100 == 0) {
@@ -331,7 +310,6 @@ class WQRSDetector {
         print('Signal amplitude: ${maxSignal - minSignal} ADC');
         
         if (_inputIsRaw) {
-          // Для сырых данных проверяем, что амплитуда соответствует ожидаемой
           if (maxSignal - minSignal < 100) {
             print('WARNING: Signal amplitude is very small!');
             print('  Expected ADC amplitude for ECG: ~2000-5000');
@@ -342,46 +320,46 @@ class WQRSDetector {
     
     reset();
     
-    // === ОБУЧЕНИЕ ===
+    // === ОБУЧЕНИЕ (как в оригинале) ===
     if (_debugMode) print('Phase 1: Learning...');
     
-    int learningEnd = (8.0 * _sampleRate).round().clamp(1, _BUFFER_SIZE ~/ 2);
-    int actualLearning = min(learningEnd, signal.length);
+    // Вычисляем t1 = 8 секунд, но не более половины буфера
+    int t1 = (8.0 * _sampleRate).round();
+    if (t1 > _BUFFER_SIZE * 0.9) {
+      t1 = _BUFFER_SIZE ~/ 2;
+    }
+    t1 = t1.clamp(1, signal.length);
     
-    for (int i = 0; i < actualLearning; i++) {
-      _ltsamp(i, signal);
-      int lt = _ltsamp(i, signal);
-      _t0 += lt;
+    // Накопление T0 за первые 8 секунд
+    double T0 = 0;
+    int samplesCount = 0;
+    
+    for (int t = 0; t < t1 && t < signal.length; t++) {
+      int lt = _ltsamp(t, signal);
+      T0 += lt;
+      samplesCount++;
     }
     
-    if (actualLearning > 0) {
-      _t0 ~/= actualLearning;
-      _ta = 3 * _t0;
-      _t1_learning = 2 * _t0;
-      _isLearning = false;
-    } else {
+    if (samplesCount == 0) {
       if (_debugMode) print('ERROR: Signal too short for learning');
       return [];
     }
     
+    T0 /= samplesCount;  // T0 = среднее значение
+    
     if (_debugMode) {
-      print('Learning complete: T0=$_t0, Ta=$_ta, T1_learning=$_t1_learning');
+      print('Learning complete: T0=$T0, samples=$samplesCount');
     }
     
-    // === ДЕТЕКЦИЯ ===
-    if (_debugMode) print('Phase 2: Detection...');
+    // === ПЕРЕЗАПУСК (как в оригинале) ===
+    if (_debugMode) print('Phase 2: Restarting and detecting...');
     
-    // Сброс состояния
+    // Полный сброс состояния
     _yn = 0;
     _yn1 = 0;
     _yn2 = 0;
     _tt = -1;
     _aet = 0;
-    _lastDetection = -1000;
-    _timer = 0;
-    _inRefractory = false;
-    _samplesProcessed = 0;
-    _detections.clear();
     
     int initialValue = sqrt(_lfsc).round();
     for (int i = 0; i < _BUFFER_SIZE; i++) {
@@ -389,17 +367,57 @@ class WQRSDetector {
       _lbuf[i] = 0;
     }
     
-    // Обработка сигнала
-    for (int i = 0; i < signal.length; i++) {
-      processSample(signal[i], signal);
+    // Установка порогов
+    _t0 = T0;
+    _ta = 3 * T0;
+    _t1 = (_ta / 3).round();  // T1 = Ta/3 (вместо T0 как в оригинале после обучения)
+    
+    _isLearning = false;
+    _lastDetection = -1000;
+    _timer = 0;
+    _inRefractory = false;
+    _samplesProcessed = 0;
+    _detections.clear();
+    _jPoints.clear();
+    _minutes = 0;
+    _nextMinute = (60 * _sampleRate).round(); // 1 минута
+    
+    // Главный цикл обработки
+    for (int t = 0; t < signal.length; t++) {
+      bool detected = _processSample(signal[t], signal, t, false);
       
-      if (_debugMode && i % (signal.length ~/ 10) == 0 && i > 0) {
-        print('Progress: ${(i / signal.length * 100).toStringAsFixed(0)}% '
-              '(${_detections.length} detections)');
+      // Эмуляция пропуска семплов во время рефрактерного периода
+      if (detected) {
+        // В оригинале: t += EyeClosing (пропуск семплов)
+        // Здесь мы пропускаем итерации цикла
+        int skipTo = t + _eyeClosingSamples;
+        if (skipTo > t + 1) {
+          // Пропускаем семплы, но нужно обновить состояние фильтра
+          // Для этого вызываем _ltsamp для пропущенных семплов
+          for (int tt = t + 1; tt < skipTo && tt < signal.length; tt++) {
+            _ltsamp(tt, signal);
+          }
+          t = skipTo - 1; // -1 потому что цикл инкрементирует
+          _inRefractory = false;
+        }
       }
+      
+      // Отслеживание прогресса (как в оригинале - точки каждую минуту)
+      if (t >= _nextMinute) {
+        _nextMinute += (60 * _sampleRate).round();
+        if (_debugMode) {
+          stdout.write('.');
+          if (++_minutes >= 60) {
+            _minutes = 0;
+          }
+        }
+      }
+      
+      _samplesProcessed++;
     }
     
     if (_debugMode) {
+      if (_minutes > 0) print('');
       print('=== Detection Complete ===');
       print('Total detections: ${_detections.length}');
       
