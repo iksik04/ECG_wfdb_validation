@@ -16,8 +16,44 @@ class PanTompkinsQRS {
 
   double _sampleRate = 250.0;
 
+  // Состояния для обучения
+  bool _isLearningPhase1 = false;
+  bool _isLearningPhase2 = false;
+  bool _isInitialized = false;
+  int _learningPhase1Counter = 0;
+  int _learningPhase2Counter = 0;
+  List<double> _learningPeaks = [];
+  List<int> _learningPeakIndices = [];
+  
+  // Время последнего обнаруженного QRS (в индексах) для рефрактерного периода
+  int _lastQRSIndex = -1000;
+  
+  // Предыдущий наклон для T-волновой дискриминации
+  double _prevSlope = 0.0;
+
+  // Адаптивные пороги для интегрального сигнала
+  double _SPKI = 0.0;
+  double _NPKI = 0.0;
+  double _THRESHOLDI1 = 0.0;
+  double _THRESHOLDI2 = 0.0;
+
+  // Адаптивные пороги для фильтрованного сигнала
+  double _SPKF = 0.0;
+  double _NPKF = 0.0;
+  double _THRESHOLDF1 = 0.0;
+  double _THRESHOLDF2 = 0.0;
+
+  // Оценки RR-интервалов
+  final List<double> _rrAvg1 = [];
+  final List<double> _rrAvg2 = [];
+
+  double _RRLowLimit = 0.0;
+  double _RRHighLimit = 0.0;
+  double _RRMissedLimit = 0.0;
+
   PanTompkinsQRS({double sampleRate = 250.0}) {
     _sampleRate = sampleRate;
+    reset();
   }
 
   void reset() {
@@ -26,6 +62,31 @@ class PanTompkinsQRS {
     _lPrev2 = 0.0;
     _hBuffer.clear();
     _hPrev1 = 0.0;
+    
+    _isLearningPhase1 = false;
+    _isLearningPhase2 = false;
+    _isInitialized = false;
+    _learningPhase1Counter = 0;
+    _learningPhase2Counter = 0;
+    _learningPeaks.clear();
+    _learningPeakIndices.clear();
+    
+    _lastQRSIndex = -1000;
+    _prevSlope = 0.0;
+    
+    _SPKI = 0.0;
+    _NPKI = 0.0;
+    _THRESHOLDI1 = 0.0;
+    _THRESHOLDI2 = 0.0;
+    _SPKF = 0.0;
+    _NPKF = 0.0;
+    _THRESHOLDF1 = 0.0;
+    _THRESHOLDF2 = 0.0;
+    _rrAvg1.clear();
+    _rrAvg2.clear();
+    _RRLowLimit = 0.0;
+    _RRHighLimit = 0.0;
+    _RRMissedLimit = 0.0;
   }
 
   /// ФНЧ: y[n] = 2*y[n-1] - y[n-2] + x[n] - 2*x[n-8] + x[n-16]
@@ -146,183 +207,6 @@ class PanTompkinsQRS {
       result[i] = sumRaw * invWin;
     }
     return result;
-  }
-
-  // Адаптивные пороги для интегрального сигнала
-  double _SPKI = 0.0;
-  double _NPKI = 0.0;
-  double _THRESHOLDI1 = 0.0;
-  double _THRESHOLDI2 = 0.0;
-
-  // Адаптивные пороги для фильтрованного сигнала
-  double _SPKF = 0.0;
-  double _NPKF = 0.0;
-  double _THRESHOLDF1 = 0.0;
-  double _THRESHOLDF2 = 0.0;
-
-  // Оценки RR-интервалов
-  final List<double> _rrAvg1 = [];
-  final List<double> _rrAvg2 = [];
-
-  double _RRLowLimit = 0.0;
-  double _RRHighLimit = 0.0;
-  double _RRMissedLimit = 0.0;
-
-  // Предыдущий наклон для T-волновой дискриминации
-  double _prevSlope = 0.0;
-
-  // Время последнего обнаруженного QRS (в индексах) для рефрактерного периода
-  int _lastQRSIndex = -1000;
-
-  // Флаг для первых двух пиков (обучение)
-  bool _isInitialized = false;
-
-  // Сброс всех порогов в начальное состояние
-  void resetThresholds() {
-    _SPKI = 0.0;
-    _NPKI = 0.0;
-    _THRESHOLDI1 = 0.0;
-    _THRESHOLDI2 = 0.0;
-    _SPKF = 0.0;
-    _NPKF = 0.0;
-    _THRESHOLDF1 = 0.0;
-    _THRESHOLDF2 = 0.0;
-    _rrAvg1.clear();
-    _rrAvg2.clear();
-    _RRLowLimit = 0.0;
-    _RRHighLimit = 0.0;
-    _RRMissedLimit = 0.0;
-    _prevSlope = 0.0;
-    _lastQRSIndex = -1000;
-    _isInitialized = false;
-  }
-
-  // Основной метод детекции
-  List<int> detectPeaks({
-    required List<double> ecgSignal,
-    required int fs,
-    required List<double> integrationSignal,
-    required List<double> bandPassSignal,
-  }) {
-    final int window = (0.15 * fs).round();
-    final List<int> integPeaks = _findLocalMaxima(integrationSignal);
-
-    final List<_PeakPair> candidatePairs = [];
-
-    for (int idx in integPeaks) {
-      int left = (idx - window).clamp(0, bandPassSignal.length - 1);
-      int right = (idx + window + 1).clamp(0, bandPassSignal.length);
-      double maxVal = -double.infinity;
-      int maxIdx = -1;
-      for (int j = left; j < right; j++) {
-        if (bandPassSignal[j] > maxVal) {
-          maxVal = bandPassSignal[j];
-          maxIdx = j;
-        }
-      }
-      if (maxIdx != -1) {
-        candidatePairs.add(_PeakPair(integIdx: idx, filtIdx: maxIdx));
-      }
-    }
-
-    final List<int> rPeaks = [];
-
-    for (int i = 0; i < candidatePairs.length; i++) {
-      final pair = candidatePairs[i];
-      final int integIdx = pair.integIdx;
-      final int filtIdx = pair.filtIdx;
-      final double integVal = integrationSignal[integIdx];
-      final double filtVal = bandPassSignal[filtIdx];
-
-      if (i < 2) {
-        _SPKI = integVal;
-        _NPKI = 0.5 * _SPKI;
-        _SPKF = filtVal;
-        _NPKF = 0.5 * _SPKF;
-        _updateThresholds();
-        rPeaks.add(integIdx);
-        _lastQRSIndex = integIdx;
-        _prevSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
-        _isInitialized = true;
-        continue;
-      }
-
-      if (integIdx - _lastQRSIndex < (0.2 * fs).round()) {
-        continue;
-      }
-
-      if (i > 0) {
-        final double rr = (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs;
-        _updateRRIntervals(rr);
-      }
-
-      bool irregularRate = false;
-      if (_rrAvg1.length >= 8) {
-        irregularRate = true;
-        for (int j = _rrAvg1.length - 8; j < _rrAvg1.length; j++) {
-          if (_rrAvg1[j] >= _RRLowLimit && _rrAvg1[j] <= _RRHighLimit) {
-            irregularRate = false;
-            break;
-          }
-        }
-      }
-
-      double thresholdI1 = irregularRate ? _THRESHOLDI1 * 0.5 : _THRESHOLDI1;
-      double thresholdF1 = irregularRate ? _THRESHOLDF1 * 0.5 : _THRESHOLDF1;
-
-      bool isQRS = false;
-
-      if (integVal >= thresholdI1 && filtVal >= thresholdF1) {
-        isQRS = true;
-        _SPKI = 0.125 * integVal + 0.875 * _SPKI;
-        _SPKF = 0.125 * filtVal + 0.875 * _SPKF;
-      } else if (_rrAvg2.isNotEmpty &&
-          i > 0 &&
-          (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs > _RRMissedLimit) {
-        final int searchBack = _performSearchBack(
-          integrationSignal: integrationSignal,
-          bandPassSignal: bandPassSignal,
-          currentIntegIdx: integIdx,
-          fs: fs,
-        );
-        if (searchBack != -1) {
-          isQRS = true;
-          int filtSearchIdx = _findFiltPeak(bandPassSignal, searchBack, fs);
-          if (filtSearchIdx != -1) {
-            _SPKI = 0.25 * integrationSignal[searchBack] + 0.75 * _SPKI;
-            _SPKF = 0.25 * bandPassSignal[filtSearchIdx] + 0.75 * _SPKF;
-            rPeaks.add(searchBack);
-            _lastQRSIndex = searchBack;
-            _updateThresholds();
-            continue;
-          }
-        }
-      }
-
-      if (isQRS) {
-        final double rr = i > 0 ? (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs : 0;
-        if (rr > 0.2 && rr < 0.36) {
-          final double currSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
-          if (currSlope < 0.5 * _prevSlope) {
-            _NPKI = 0.125 * integVal + 0.875 * _NPKI;
-            _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
-            _updateThresholds();
-            continue;
-          }
-        }
-
-        rPeaks.add(integIdx);
-        _lastQRSIndex = integIdx;
-        _prevSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
-        _updateThresholds();
-      } else {
-        _NPKI = 0.125 * integVal + 0.875 * _NPKI;
-        _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
-        _updateThresholds();
-      }
-    }
-
-    return rPeaks;
   }
 
   // ---- Вспомогательные методы ----
@@ -470,16 +354,18 @@ class PanTompkinsQRS {
     } else return 20;
   }
 
-  /// Основной метод обработки сигнала
-  /// Возвращает обработанный сигнал (после всех этапов обработки)
+  // ============================================================
+  // НОВАЯ РЕАЛИЗАЦИЯ С ДВУХФАЗНЫМ ОБУЧЕНИЕМ
+  // ============================================================
+
+  /// Основной метод обработки сигнала с двухфазным обучением
   List<double> process(List<double> signal) {
     if (signal.isEmpty) return [];
 
     // Сброс всех внутренних состояний
     reset();
-    resetThresholds();
 
-    // 1. Полосовая фильтрация (каскад ФНЧ + ФВЧ)
+    // 1. Полосовая фильтрация
     final List<double> filtered = List.filled(signal.length, 0.0);
     if (_sampleRate == 250) {
       for (int i = 0; i < signal.length; i++) {
@@ -499,13 +385,24 @@ class PanTompkinsQRS {
     // 3. Возведение в квадрат
     final List<double> squared = squaring(derivated);
 
-    // 4. Скользящее интегрирование (окно 150 мс)
+    // 4. Скользящее интегрирование
     final List<double> integrated = movingWindowIntegration(squared, _sampleRate);
 
-    // 5. Масштабирование к уровню исходного сигнала
+    // 5. Двухфазное обучение
+    _performTwoPhaseLearning(integrated, filtered);
+
+    // 6. Детекция пиков с использованием обученных порогов
+    final List<int> peaks = detectPeaks(
+      ecgSignal: signal,
+      fs: _sampleRate.round(),
+      integrationSignal: integrated,
+      bandPassSignal: filtered,
+    );
+
+    // 7. Масштабирование
     final List<double> scaled = scaleToOriginal(integrated, signal);
 
-    // 6. Коррекция задержки
+    // 8. Коррекция задержки
     int delay = _getDelay(_sampleRate.round());
     final List<double> shifted = List.filled(scaled.length, 0.0);
     final int copyLength = scaled.length - delay;
@@ -516,13 +413,241 @@ class PanTompkinsQRS {
     return shifted;
   }
 
+  /// Двухфазное обучение по статье Pan & Tompkins
+  void _performTwoPhaseLearning(
+    List<double> integrationSignal,
+    List<double> bandPassSignal,
+  ) {
+    if (integrationSignal.length < 100) return;
+
+    // Находим все локальные максимумы в интегральном сигнале
+    final List<int> integPeaks = _findLocalMaxima(integrationSignal);
+    if (integPeaks.length < 2) return;
+
+    // === ФАЗА 1: Обучение (первые ~2 секунды) ===
+    _isLearningPhase1 = true;
+    _learningPhase1Counter = 0;
+    _learningPeaks.clear();
+    _learningPeakIndices.clear();
+
+    // Используем первые 2 секунды сигнала для инициализации порогов
+    final int learningWindowSamples = (2.0 * _sampleRate).round();
+    int learningEnd = min(learningWindowSamples, integPeaks.length);
+
+    // Находим максимальные пики в первом окне обучения
+    double maxIntegPeak = 0.0;
+    double maxFiltPeak = 0.0;
+    int maxIntegIdx = -1;
+    int maxFiltIdx = -1;
+
+    for (int i = 0; i < learningEnd && i < integPeaks.length; i++) {
+      int idx = integPeaks[i];
+      if (idx < integrationSignal.length) {
+        if (integrationSignal[idx] > maxIntegPeak) {
+          maxIntegPeak = integrationSignal[idx];
+          maxIntegIdx = idx;
+          
+          // Находим соответствующий пик в фильтрованном сигнале
+          int filtIdx = _findFiltPeak(bandPassSignal, idx, _sampleRate.round());
+          if (filtIdx != -1 && filtIdx < bandPassSignal.length) {
+            if (bandPassSignal[filtIdx] > maxFiltPeak) {
+              maxFiltPeak = bandPassSignal[filtIdx];
+              maxFiltIdx = filtIdx;
+            }
+          }
+        }
+      }
+    }
+
+    // Инициализация порогов на основе максимального пика
+    if (maxIntegIdx != -1 && maxFiltIdx != -1) {
+      _SPKI = maxIntegPeak;
+      _SPKF = maxFiltPeak;
+      _NPKI = 0.5 * maxIntegPeak;
+      _NPKF = 0.5 * maxFiltPeak;
+      _updateThresholds();
+      
+      // Запоминаем первый обнаруженный QRS
+      _lastQRSIndex = maxIntegIdx;
+      _prevSlope = _computeMaxSlope(bandPassSignal, maxFiltIdx, _sampleRate.round());
+      
+      // Добавляем в список обученных пиков
+      _learningPeaks.add(maxIntegPeak);
+      _learningPeakIndices.add(maxIntegIdx);
+    }
+
+    _isLearningPhase1 = false;
+    _isLearningPhase2 = true;
+
+    // === ФАЗА 2: Обучение на двух последовательных QRS ===
+    _learningPhase2Counter = 0;
+    int rr1 = -1;
+    int rr2 = -1;
+
+    // Находим два последовательных QRS комплекса для инициализации RR-интервалов
+    for (int i = 0; i < integPeaks.length && _learningPhase2Counter < 2; i++) {
+      int idx = integPeaks[i];
+      if (idx < integrationSignal.length) {
+        // Проверяем, что это валидный QRS
+        double integVal = integrationSignal[idx];
+        double filtVal = bandPassSignal[_findFiltPeak(bandPassSignal, idx, _sampleRate.round())];
+        
+        if (integVal >= _THRESHOLDI1 && filtVal >= _THRESHOLDF1) {
+          if (_learningPhase2Counter == 0) {
+            rr1 = idx;
+          } else if (_learningPhase2Counter == 1) {
+            rr2 = idx;
+            // Вычисляем RR-интервал
+            double rrInterval = (rr2 - rr1).abs() / _sampleRate;
+            if (rrInterval > 0.2 && rrInterval < 2.0) { // Физиологический диапазон
+              _updateRRIntervals(rrInterval);
+              _lastQRSIndex = idx;
+              _prevSlope = _computeMaxSlope(bandPassSignal, 
+                _findFiltPeak(bandPassSignal, idx, _sampleRate.round()), 
+                _sampleRate.round());
+            }
+          }
+          _learningPhase2Counter++;
+        }
+      }
+    }
+
+    _isLearningPhase2 = false;
+    _isInitialized = true;
+  }
+
+  /// Основной метод детекции с поддержкой обучения
+  List<int> detectPeaks({
+    required List<double> ecgSignal,
+    required int fs,
+    required List<double> integrationSignal,
+    required List<double> bandPassSignal,
+  }) {
+    final int window = (0.15 * fs).round();
+    final List<int> integPeaks = _findLocalMaxima(integrationSignal);
+
+    final List<_PeakPair> candidatePairs = [];
+
+    for (int idx in integPeaks) {
+      int left = (idx - window).clamp(0, bandPassSignal.length - 1);
+      int right = (idx + window + 1).clamp(0, bandPassSignal.length);
+      double maxVal = -double.infinity;
+      int maxIdx = -1;
+      for (int j = left; j < right; j++) {
+        if (bandPassSignal[j] > maxVal) {
+          maxVal = bandPassSignal[j];
+          maxIdx = j;
+        }
+      }
+      if (maxIdx != -1) {
+        candidatePairs.add(_PeakPair(integIdx: idx, filtIdx: maxIdx));
+      }
+    }
+
+    final List<int> rPeaks = [];
+
+    // Если обучение не завершено, пропускаем детекцию
+    if (!_isInitialized) {
+      return rPeaks;
+    }
+
+    for (int i = 0; i < candidatePairs.length; i++) {
+      final pair = candidatePairs[i];
+      final int integIdx = pair.integIdx;
+      final int filtIdx = pair.filtIdx;
+      final double integVal = integrationSignal[integIdx];
+      final double filtVal = bandPassSignal[filtIdx];
+
+      // Рефрактерный период (200 мс)
+      if (integIdx - _lastQRSIndex < (0.2 * fs).round()) {
+        continue;
+      }
+
+      // Обновление RR-интервалов
+      if (i > 0) {
+        final double rr = (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs;
+        _updateRRIntervals(rr);
+      }
+
+      // Проверка на нерегулярный ритм
+      bool irregularRate = false;
+      if (_rrAvg1.length >= 8) {
+        irregularRate = true;
+        for (int j = _rrAvg1.length - 8; j < _rrAvg1.length; j++) {
+          if (_rrAvg1[j] >= _RRLowLimit && _rrAvg1[j] <= _RRHighLimit) {
+            irregularRate = false;
+            break;
+          }
+        }
+      }
+
+      double thresholdI1 = irregularRate ? _THRESHOLDI1 * 0.5 : _THRESHOLDI1;
+      double thresholdF1 = irregularRate ? _THRESHOLDF1 * 0.5 : _THRESHOLDF1;
+
+      bool isQRS = false;
+
+      // Основная проверка
+      if (integVal >= thresholdI1 && filtVal >= thresholdF1) {
+        isQRS = true;
+        _SPKI = 0.125 * integVal + 0.875 * _SPKI;
+        _SPKF = 0.125 * filtVal + 0.875 * _SPKF;
+      } 
+      // Search-back для пропущенных QRS
+      else if (_rrAvg2.isNotEmpty &&
+          i > 0 &&
+          (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs > _RRMissedLimit) {
+        final int searchBack = _performSearchBack(
+          integrationSignal: integrationSignal,
+          bandPassSignal: bandPassSignal,
+          currentIntegIdx: integIdx,
+          fs: fs,
+        );
+        if (searchBack != -1) {
+          isQRS = true;
+          int filtSearchIdx = _findFiltPeak(bandPassSignal, searchBack, fs);
+          if (filtSearchIdx != -1) {
+            _SPKI = 0.25 * integrationSignal[searchBack] + 0.75 * _SPKI;
+            _SPKF = 0.25 * bandPassSignal[filtSearchIdx] + 0.75 * _SPKF;
+            rPeaks.add(searchBack);
+            _lastQRSIndex = searchBack;
+            _updateThresholds();
+            continue;
+          }
+        }
+      }
+
+      if (isQRS) {
+        // T-волновая дискриминация
+        final double rr = i > 0 ? (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs : 0;
+        if (rr > 0.2 && rr < 0.36) {
+          final double currSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
+          if (currSlope < 0.5 * _prevSlope) {
+            _NPKI = 0.125 * integVal + 0.875 * _NPKI;
+            _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
+            _updateThresholds();
+            continue;
+          }
+        }
+
+        rPeaks.add(integIdx);
+        _lastQRSIndex = integIdx;
+        _prevSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
+        _updateThresholds();
+      } else {
+        _NPKI = 0.125 * integVal + 0.875 * _NPKI;
+        _NPKF = 0.125 * filtVal + 0.875 * _NPKF;
+        _updateThresholds();
+      }
+    }
+
+    return rPeaks;
+  }
+
   /// Дополнительный метод для получения R-пиков
-  /// Возвращает список индексов R-пиков
   List<int> detectRPeaks(List<double> signal) {
     if (signal.isEmpty) return [];
 
     reset();
-    resetThresholds();
 
     final List<double> filtered = List.filled(signal.length, 0.0);
     if (_sampleRate == 250) {
@@ -540,6 +665,9 @@ class PanTompkinsQRS {
     final List<double> derivated = derivative(filtered, _sampleRate);
     final List<double> squared = squaring(derivated);
     final List<double> integrated = movingWindowIntegration(squared, _sampleRate);
+
+    // Выполняем обучение
+    _performTwoPhaseLearning(integrated, filtered);
 
     final List<int> peaks = detectPeaks(
       ecgSignal: signal,
