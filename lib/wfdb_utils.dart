@@ -3,7 +3,8 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 
-import '../lib/pan-tompkins.dart';
+//import '../lib/pan-tompkins.dart';
+import '../lib/wqrs.dart';
 
 // ============================================================
 // Глобальная переменная для пути к утилитам WFDB
@@ -212,14 +213,26 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
 
   print('Загружено ${ecgData.length} отсчётов, частота $fs Гц');
 
-  // Создаём детектор с нужной частотой дискретизации
+  /*// Создаём детектор с нужной частотой дискретизации
   final detector = PanTompkinsQRS(sampleRate: sampleRate);
 
   // Детектируем пики
-  final List<int> peaks = detector.detectRPeaks(ecgData);
+  final List<int> peaks = detector.detectRPeaks(ecgData);*/
+
+  final detector = WQRSDetector(sampleRate: 250.0);
+  List<int> peaks = detector.detect(ecgData);
 
   print('Результат: ${peaks.length} пиков');
 
   // Сохраняем пики в .gqrs аннотацию
   await writePeaksWithWRAnn(folderPath, recordNumber, peaks, fs);
+  var debugInfo = detector.getDebugInfo();
+  print('\n=== DEBUG INFO ===');
+  debugInfo.forEach((key, value) {
+    if (value is double) {
+      print('$key: ${value.toStringAsFixed(2)}');
+    } else {
+      print('$key: $value');
+    }
+  });
 }
