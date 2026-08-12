@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-set SCRIPT_NAME=pan-tompkins.dart
-set DB_PATH=C:\Users\Public\Work\ECG_DB\AHADB
+set SCRIPT_NAME=lib\main.dart
+set DB_PATH=C:\Users\Public\Work\QRS-detector\ECG_DB\NSTDB
 
 echo Searching for records in folder %DB_PATH%...
 echo.

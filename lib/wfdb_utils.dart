@@ -182,7 +182,7 @@ Future<void> writePeaksWithWRAnn(String folderPath, String recordName, List<int>
   }
 }
 
-/// Обработка одной записи (адаптировано под новую версию PanTompkinsQRS)
+/// Обработка одной записи
 Future<void> processRecording(String folderPath, String recordNumber, int channel) async {
   // Нормализуем пути
   String normalizedFolder = folderPath.replaceAll('/', '\\');
