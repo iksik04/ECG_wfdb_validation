@@ -2,9 +2,8 @@
 import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
-import 'dart:math';
 
-import '../lib/wqrs.dart';
+import '../lib/pan-tompkins.dart';
 
 // ============================================================
 // Глобальная переменная для пути к утилитам WFDB
@@ -16,69 +15,22 @@ String getWfdbCommand(String command) {
   if (wfdbBinPath.isEmpty) {
     return command;
   }
+  // Добавляем разделитель пути, если его нет в конце
   String path = wfdbBinPath;
   if (!path.endsWith(Platform.pathSeparator)) {
     path += Platform.pathSeparator;
   }
+  // На Windows добавляем .exe если нужно
   if (Platform.isWindows && !command.endsWith('.exe')) {
     return path + command + '.exe';
   }
   return path + command;
 }
 
-/// Чтение коэффициента усиления из файла .hea
-Future<double> getGain(String filePath) async {
-  try {
-    String normalizedPath = filePath.replaceAll('/', '\\');
-    if (normalizedPath.endsWith('.hea')) {
-      normalizedPath = normalizedPath.substring(0, normalizedPath.length - 4);
-    }
-
-    final heaFile = File('$normalizedPath.hea');
-    if (!await heaFile.exists()) {
-      print('Предупреждение: файл .hea не найден, используется усиление по умолчанию 200');
-      return 200.0;
-    }
-
-    final content = await heaFile.readAsString();
-    final lines = content.split('\n');
-
-    for (int i = 0; i < lines.length; i++) {
-      final line = lines[i].trim();
-      if (line.isEmpty) continue;
-
-      final parts = line.split(RegExp(r'\s+'));
-      // Формат: имя_сигнала частота количество_бит ADC_разрешение [физический_минимум физический_максимум] [единицы]
-      // Пример: 1201 2 250 16 0.0 100.0 mV
-      if (parts.length >= 5) {
-        final adcResolution = int.tryParse(parts[3]);
-        final physicalMin = double.tryParse(parts[4]);
-        final physicalMax = double.tryParse(parts[5]);
-        
-        if (adcResolution != null && physicalMin != null && physicalMax != null && physicalMax > physicalMin) {
-          // Gain = (максимальное АЦП) / (физический диапазон)
-          // Для 16-битного АЦП: max ADC = 2^16 = 65536
-          // Но часто используется ±32768 для 16-битных данных
-          double maxAdc = pow(2, adcResolution).toDouble() / 2;
-          double physicalRange = physicalMax - physicalMin;
-          double gain = maxAdc / physicalRange;
-          print('Найден gain из .hea: $gain ADC/ед. (resolution=${adcResolution}bit, range=${physicalRange}ед.)');
-          return gain;
-        }
-      }
-    }
-
-    print('Предупреждение: не удалось определить усиление, используется 200');
-    return 200.0;
-  } catch (e) {
-    print('Ошибка чтения файла .hea: $e');
-    return 200.0;
-  }
-}
-
 /// Чтение частоты дискретизации из файла .hea
 Future<double> getSampleRate(String filePath) async {
   try {
+    // Нормализуем путь для Windows
     String normalizedPath = filePath.replaceAll('/', '\\');
     if (normalizedPath.endsWith('.hea')) {
       normalizedPath = normalizedPath.substring(0, normalizedPath.length - 4);
@@ -86,8 +38,8 @@ Future<double> getSampleRate(String filePath) async {
 
     final heaFile = File('$normalizedPath.hea');
     if (!await heaFile.exists()) {
-      print('Предупреждение: файл .hea не найден, используется частота по умолчанию 250');
-      return 250.0;
+      print('Предупреждение: файл .hea не найден, используется частота по умолчанию 360');
+      return 360.0;
     }
 
     final content = await heaFile.readAsString();
@@ -95,27 +47,30 @@ Future<double> getSampleRate(String filePath) async {
 
     for (final line in lines) {
       if (line.trim().isEmpty) continue;
+
       final parts = line.trim().split(RegExp(r'\s+'));
       if (parts.length >= 3) {
         final sampleRate = double.tryParse(parts[2]);
         if (sampleRate != null && sampleRate > 0) {
+          print(sampleRate);
           return sampleRate;
         }
       }
       break;
     }
 
-    print('Предупреждение: не удалось определить частоту дискретизации, используется 250');
-    return 250.0;
+    print('Предупреждение: не удалось определить частоту дискретизации, используется 360');
+    return 360.0;
   } catch (e) {
     print('Ошибка чтения файла .hea: $e');
-    return 250.0;
+    return 360.0;
   }
 }
 
-/// Загрузка сырых данных ЭКГ с помощью rdsamp (без флага -p)
-Future<List<int>> loadRawECGDataWithRDSamp(String folderPath, String recordName, int channel) async {
+/// Загрузка данных ЭКГ с помощью rdsamp
+Future<List<double>> loadECGDataWithRDSamp(String folderPath, String recordName, int channel) async {
   try {
+    // Убеждаемся, что файл физически существует по указанному пути
     final datFile = File('$folderPath\\$recordName.dat');
     if (!await datFile.exists()) {
       print('Ошибка: файл .dat не найден: ${datFile.path}');
@@ -125,10 +80,10 @@ Future<List<int>> loadRawECGDataWithRDSamp(String folderPath, String recordName,
     final rdsampCmd = getWfdbCommand('rdsamp');
     print('Запуск rdsamp для записи: $recordName в папке: $folderPath');
 
-    // БЕЗ флага -p - возвращаем сырые АЦП-значения
+    // Используем Process.run с установкой окружения и рабочей директории
     final result = await Process.run(
       rdsampCmd,
-      ['-r', recordName, '-f', '0', '-t', 'end'],  // Убрали -p
+      ['-r', recordName, '-f', '0', '-t', 'end', '-p', '-v'],
       runInShell: true,
       workingDirectory: folderPath,
       environment: {'WFDB': '.'},
@@ -139,15 +94,14 @@ Future<List<int>> loadRawECGDataWithRDSamp(String folderPath, String recordName,
       return [];
     }
 
-    return _parseRawRDSampOutput(result.stdout.toString(), channel);
+    return _parseRDSampOutput(result.stdout.toString(), channel);
   } catch (e) {
     print('Ошибка выполнения rdsamp: $e');
     return [];
   }
 }
 
-/// Парсинг сырых АЦП-данных из rdsamp
-List<int> _parseRawRDSampOutput(String output, int channel) {
+List<double> _parseRDSampOutput(String output, int channel) {
   final lines = output.split('\n')
       .where((line) => line.trim().isNotEmpty)
       .toList();
@@ -157,15 +111,18 @@ List<int> _parseRawRDSampOutput(String output, int channel) {
     return [];
   }
 
-  final signal = <int>[];
+  final signal = <double>[];
 
   for (final line in lines) {
     try {
       final parts = line.trim().split(RegExp(r'\s+'));
       if (parts.length < channel + 2) continue;
 
-      final value = int.parse(parts[channel + 1]);
-      signal.add(value);
+      final value = double.parse(parts[channel + 1]);
+
+      if (value.isFinite) {
+        signal.add(value);
+      }
     } catch (e) {
       continue;
     }
@@ -227,6 +184,7 @@ Future<void> writePeaksWithWRAnn(String folderPath, String recordName, List<int>
 
 /// Обработка одной записи
 Future<void> processRecording(String folderPath, String recordNumber, int channel) async {
+  // Нормализуем пути
   String normalizedFolder = folderPath.replaceAll('/', '\\');
   if (normalizedFolder.endsWith('\\')) {
     normalizedFolder = normalizedFolder.substring(0, normalizedFolder.length - 1);
@@ -234,52 +192,34 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
 
   print('Обработка: $normalizedFolder, запись $recordNumber, канал $channel');
 
+  // Проверяем существование .dat файла
   final datFile = File('$normalizedFolder\\$recordNumber.dat');
   if (!await datFile.exists()) {
     print('Ошибка: файл $normalizedFolder\\$recordNumber.dat не найден');
     return;
   }
 
-  // Получаем параметры из .hea файла
+  // Получаем частоту дискретизации
   final sampleRate = await getSampleRate('$normalizedFolder\\$recordNumber');
-  final gain = await getGain('$normalizedFolder\\$recordNumber');
   final fs = sampleRate.round();
 
-  // Загружаем сырые АЦП-данные через rdsamp (без -p)
-  final rawData = await loadRawECGDataWithRDSamp(folderPath, recordNumber, channel);
-  if (rawData.isEmpty) {
+  // Загружаем данные через rdsamp
+  final ecgData = await loadECGDataWithRDSamp(folderPath, recordNumber, channel);
+  if (ecgData.isEmpty) {
     print('Ошибка: данные не загружены');
     return;
   }
 
-  print('Загружено ${rawData.length} отсчётов, частота $fs Гц, усиление ${gain.toStringAsFixed(1)} ADC/ед.');
+  print('Загружено ${ecgData.length} отсчётов, частота $fs Гц');
 
-  // Создаём детектор для работы с сырыми АЦП-данными
-  final detector = WQRSDetector(
-    sampleRate: sampleRate,
-    gain: gain,  // Используем реальное усиление из заголовка
-    powerLineFreq: 50,
-    minThreshold: 100,
-    eyeClosingPeriod: 0.25,
-    maxQRSWidth: 0.13,
-    ndp: 2.5,
-    debugMode: true,
-    inputIsRaw: true,  // Указываем, что входные данные - сырые АЦП
-  );
+  // Создаём детектор с нужной частотой дискретизации
+  final detector = PanTompkinsQRS(sampleRate: sampleRate);
 
-  List<int> peaks = detector.detect(rawData);
+  // Детектируем пики
+  final List<int> peaks = detector.detectRPeaks(ecgData);
 
   print('Результат: ${peaks.length} пиков');
 
+  // Сохраняем пики в .gqrs аннотацию
   await writePeaksWithWRAnn(folderPath, recordNumber, peaks, fs);
-  
-  var debugInfo = detector.getDebugInfo();
-  print('\n=== DEBUG INFO ===');
-  debugInfo.forEach((key, value) {
-    if (value is double) {
-      print('$key: ${value.toStringAsFixed(2)}');
-    } else {
-      print('$key: $value');
-    }
-  });
 }

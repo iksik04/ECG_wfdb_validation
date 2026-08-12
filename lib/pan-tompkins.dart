@@ -51,9 +51,6 @@ class PanTompkinsQRS {
   double _RRHighLimit = 0.0;
   double _RRMissedLimit = 0.0;
 
-  // Флаг для отслеживания, был ли уже обновлен RR_avg2 в текущем цикле
-  bool _rrAvg2Updated = false;
-
   PanTompkinsQRS({double sampleRate = 250.0}) {
     _sampleRate = sampleRate;
     reset();
@@ -90,7 +87,6 @@ class PanTompkinsQRS {
     _RRLowLimit = 0.0;
     _RRHighLimit = 0.0;
     _RRMissedLimit = 0.0;
-    _rrAvg2Updated = false;
   }
 
   /// ФНЧ: y[n] = 2*y[n-1] - y[n-2] + x[n] - 2*x[n-8] + x[n-16]
@@ -232,73 +228,37 @@ class PanTompkinsQRS {
     _THRESHOLDF2 = 0.5 * _THRESHOLDF1;
   }
 
-  /// ИСПРАВЛЕННАЯ ЛОГИКА ОБНОВЛЕНИЯ RR-ИНТЕРВАЛОВ
-  /// В соответствии со статьей Pan & Tompkins:
-  /// 
-  /// RR_avg1 = среднее 8 последних RR-интервалов (любых)
-  /// RR_avg2 = среднее 8 последних RR-интервалов, которые попадают в допустимый диапазон (92-116% от текущего RR_avg2)
-  /// 
-  /// Если все 8 последних интервалов из RR_avg1 попадают в допустимый диапазон,
-  /// то RR_avg2 = RR_avg1 (обновление RR_avg2)
   void _updateRRIntervals(double rr) {
-    // 1. Обновляем RR_avg1 (всегда добавляем новый интервал)
     _rrAvg1.add(rr);
     if (_rrAvg1.length > 8) _rrAvg1.removeAt(0);
 
-    // 2. Обновляем RR_avg2 только если RR_avg2 уже инициализирован
-    if (_rrAvg2.isNotEmpty) {
-      // Проверяем, попадает ли новый RR-интервал в допустимый диапазон
-      if (rr >= _RRLowLimit && rr <= _RRHighLimit) {
-        // Добавляем интервал в RR_avg2
-        _rrAvg2.add(rr);
-        if (_rrAvg2.length > 8) _rrAvg2.removeAt(0);
-      }
-      
-      // 3. Проверяем, все ли 8 последних интервалов из RR_avg1 попадают в допустимый диапазон
-      // Это соответствует формуле (29) из статьи: 
-      // "If each of the eight most-recent sequential RR intervals that are calculated 
-      // from RR AVERAGE1 is between the RR LOW LIMIT and the RR HIGH LIMIT, 
-      // we interpret the heart rate to be regular for these eight heart beats and 
-      // RR AVERAGE2 <- RR AVERAGE1."
-      if (_rrAvg1.length >= 8) {
-        bool allInRange = true;
-        for (int i = 0; i < _rrAvg1.length; i++) {
-          if (_rrAvg1[i] < _RRLowLimit || _rrAvg1[i] > _RRHighLimit) {
-            allInRange = false;
-            break;
-          }
-        }
-        
-        // Если все 8 интервалов в допустимом диапазоне, обновляем RR_avg2 = RR_avg1
-        if (allInRange) {
-          final double avg1 = _rrAvg1.reduce((a, b) => a + b) / _rrAvg1.length;
-          // Очищаем RR_avg2 и заполняем его копией RR_avg1
-          _rrAvg2.clear();
-          _rrAvg2.addAll(_rrAvg1);
-          // Убеждаемся, что длина не превышает 8
-          while (_rrAvg2.length > 8) {
-            _rrAvg2.removeAt(0);
-          }
-          _rrAvg2Updated = true;
-        }
-      }
-    } else {
-      // Если RR_avg2 пуст, добавляем интервал (первая инициализация)
-      _rrAvg2.add(rr);
-    }
-
-    // 4. Пересчитываем лимиты на основе текущего RR_avg2
     if (_rrAvg2.length >= 8) {
       final double avg2 = _rrAvg2.reduce((a, b) => a + b) / _rrAvg2.length;
       _RRLowLimit = 0.92 * avg2;
       _RRHighLimit = 1.16 * avg2;
       _RRMissedLimit = 1.66 * avg2;
-    } else if (_rrAvg2.isNotEmpty) {
-      // Если меньше 8 интервалов, используем доступные для приблизительной оценки
-      final double avg2 = _rrAvg2.reduce((a, b) => a + b) / _rrAvg2.length;
-      _RRLowLimit = 0.92 * avg2;
-      _RRHighLimit = 1.16 * avg2;
-      _RRMissedLimit = 1.66 * avg2;
+    }
+
+    if (_rrAvg2.isEmpty || (rr >= _RRLowLimit && rr <= _RRHighLimit)) {
+      _rrAvg2.add(rr);
+      if (_rrAvg2.length > 8) _rrAvg2.removeAt(0);
+    }
+
+    if (_rrAvg1.length >= 8) {
+      bool allInRange = true;
+      for (int i = _rrAvg1.length - 8; i < _rrAvg1.length; i++) {
+        if (_rrAvg1[i] < _RRLowLimit || _rrAvg1[i] > _RRHighLimit) {
+          allInRange = false;
+          break;
+        }
+      }
+      if (allInRange && _rrAvg2.isNotEmpty) {
+        final double avg1 = _rrAvg1.reduce((a, b) => a + b) / _rrAvg1.length;
+        if (_rrAvg2.length >= 8) {
+          _rrAvg2.removeAt(0);
+          _rrAvg2.add(avg1);
+        }
+      }
     }
   }
 
@@ -395,7 +355,7 @@ class PanTompkinsQRS {
   }
 
   // ============================================================
-  // ДВУХФАЗНОЕ ОБУЧЕНИЕ
+  // НОВАЯ РЕАЛИЗАЦИЯ С ДВУХФАЗНЫМ ОБУЧЕНИЕМ
   // ============================================================
 
   /// Основной метод обработки сигнала с двухфазным обучением
@@ -530,13 +490,11 @@ class PanTompkinsQRS {
       if (idx < integrationSignal.length) {
         // Проверяем, что это валидный QRS
         double integVal = integrationSignal[idx];
-        int filtIdx = _findFiltPeak(bandPassSignal, idx, _sampleRate.round());
-        double filtVal = filtIdx != -1 ? bandPassSignal[filtIdx] : 0.0;
+        double filtVal = bandPassSignal[_findFiltPeak(bandPassSignal, idx, _sampleRate.round())];
         
         if (integVal >= _THRESHOLDI1 && filtVal >= _THRESHOLDF1) {
           if (_learningPhase2Counter == 0) {
             rr1 = idx;
-            _learningPhase2Counter++;
           } else if (_learningPhase2Counter == 1) {
             rr2 = idx;
             // Вычисляем RR-интервал
@@ -548,8 +506,8 @@ class PanTompkinsQRS {
                 _findFiltPeak(bandPassSignal, idx, _sampleRate.round()), 
                 _sampleRate.round());
             }
-            _learningPhase2Counter++;
           }
+          _learningPhase2Counter++;
         }
       }
     }
@@ -605,12 +563,10 @@ class PanTompkinsQRS {
         continue;
       }
 
-      // Обновление RR-интервалов (только если есть предыдущий QRS)
-      if (i > 0 && _lastQRSIndex > 0) {
-        final double rr = (integIdx - _lastQRSIndex) / fs;
-        if (rr > 0.2 && rr < 2.0) { // Физиологический диапазон
-          _updateRRIntervals(rr);
-        }
+      // Обновление RR-интервалов
+      if (i > 0) {
+        final double rr = (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs;
+        _updateRRIntervals(rr);
       }
 
       // Проверка на нерегулярный ритм
@@ -639,7 +595,7 @@ class PanTompkinsQRS {
       // Search-back для пропущенных QRS
       else if (_rrAvg2.isNotEmpty &&
           i > 0 &&
-          (integIdx - _lastQRSIndex) / fs > _RRMissedLimit) {
+          (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs > _RRMissedLimit) {
         final int searchBack = _performSearchBack(
           integrationSignal: integrationSignal,
           bandPassSignal: bandPassSignal,
@@ -662,7 +618,7 @@ class PanTompkinsQRS {
 
       if (isQRS) {
         // T-волновая дискриминация
-        final double rr = i > 0 ? (integIdx - _lastQRSIndex) / fs : 0;
+        final double rr = i > 0 ? (candidatePairs[i].integIdx - candidatePairs[i - 1].integIdx) / fs : 0;
         if (rr > 0.2 && rr < 0.36) {
           final double currSlope = _computeMaxSlope(bandPassSignal, filtIdx, fs);
           if (currSlope < 0.5 * _prevSlope) {
