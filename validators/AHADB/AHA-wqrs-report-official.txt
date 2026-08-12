@@ -1,18 +1,3 @@
-file: AHA-wqrs-report.txt	ecgeval		12 August 2026
-Evaluation of `wqrs' on the AHA Database for Evaluation of Ventricular Arrhythmia Detectors
-
-Beat detection and classification performance 
-Режим вывода команд на экран (ECHO) включен.
-Режим вывода команд на экран (ECHO) включен.
-Analysis shutdowns 
-Режим вывода команд на экран (ECHO) включен.
-Режим вывода команд на экран (ECHO) включен.
-Ventricular ectopic run detection performance 
-Режим вывода команд на экран (ECHO) включен.
-Режим вывода команд на экран (ECHO) включен.
-Heart rate measurement number 0 performance 
-Режим вывода команд на экран (ECHO) включен.
-Режим вывода команд на экран (ECHO) включен.
 Beat detection and classification performance 
 Режим вывода команд на экран (ECHO) включен.
 Record Nn' Vn' Fn' On'  Nv   Vv  Fv' Ov' No' Vo' Fo'  Q Se   Q +P   V Se   V +P  V FPR
