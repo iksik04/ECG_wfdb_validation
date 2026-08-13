@@ -3,12 +3,12 @@ import 'dart:math';
 import 'dart:io';
 
 class WQRS {
-  // Константы из оригинального C-кода
+
   static const int BUFLN = 16384;  // must be a power of 2
   static const double EYE_CLS = 0.25;
   static const double MaxQRSw = 0.13;
   static const double NDP = 2.5;
-  static const int PWFreqDEF = 60;
+  static const int PWFreqDEF = 50;
   static const int TmDEF = 100;
 
   // Параметры класса
@@ -105,13 +105,13 @@ class WQRS {
   int ltsamp(int t) {
     int dy;
 
-    // Инициализация буферов (как в C)
+    // Инициализация буферов
     if (_lbuf == null) {
       _lbuf = List<int>.filled(BUFLN, 0);
       _ebuf = List<int>.filled(BUFLN, 0);
 
       if (_lbuf != null && _ebuf != null) {
-        // Инициализация ebuf как в C
+        // Инициализация ebuf
         _ebuf![0] = sqrt(_lfsc).round();
         _tt = 1;
         while (_tt < BUFLN) {
@@ -119,7 +119,7 @@ class WQRS {
           _tt++;
         }
 
-        // Установка начального tt как в C
+        // Установка начального tt
         if (t > BUFLN) {
           _tt = t - BUFLN;
         } else {
@@ -137,13 +137,13 @@ class WQRS {
       }
     }
 
-    // Проверка буфера (как в C)
+    // Проверка буфера
     if (t < _tt - BUFLN) {
       stderr.writeln('WQRS: ltsamp buffer too short');
       exit(2);
     }
 
-    // Основной цикл ltsamp (точная копия C)
+    // Основной цикл ltsamp
     while (t > _tt) {
       _Yn2 = _Yn1;
       _Yn1 = _Yn;
@@ -152,7 +152,7 @@ class WQRS {
       int v1 = _getSample(_sig, _tt - _LPn);
       int v2 = _getSample(_sig, _tt - _LP2n);
 
-      // Обновляем Yn только если все sample валидны (как в C)
+      // Обновляем Yn только если все sample валидны
       if (v0 != -1 && v1 != -1 && v2 != -1) {
         _Yn = 2 * _Yn1 - _Yn2 + v0 - 2 * v1 + v2;
       }
@@ -164,7 +164,7 @@ class WQRS {
       _et = sqrt(_lfsc + dy * dy).round();
       _ebuf![_tt & (BUFLN - 1)] = _et;
 
-      // Накопление length transform (как в C)
+      // Накопление length transform
       _aet += _et - _ebuf![(_tt - _LTwindow) & (BUFLN - 1)];
       _lbuf![_tt & (BUFLN - 1)] = _aet;
     }
@@ -224,13 +224,13 @@ class WQRS {
     int next_minute = from + spm.round();
     double T1 = 0;
 
-    // Основной цикл детекции (точная копия C)
+    // Основной цикл детекции
     for (int t = from; t < to && t < signal.length; t++) {
       if (learning) {
         if (t > t1) {
           learning = false;
           T1 = T0;
-          t = from - 1;  // restart (как в C)
+          t = from - 1;  // restart
           continue;
         } else {
           T1 = 2 * T0;
@@ -243,7 +243,7 @@ class WQRS {
         int maxVal = ltsamp(t);
         int minVal = ltsamp(t);
         
-        // Поиск максимума и минимума (как в C)
+        // Поиск максимума и минимума
         int halfEye = (_EyeClosing / 2).round();
         for (int tt = t + 1; tt < t + halfEye && tt < signal.length; tt++) {
           int val = ltsamp(tt);
@@ -256,7 +256,7 @@ class WQRS {
         }
         
         if (maxVal > minVal + 10) {
-          // Находим начало QRS (PQ junction) - как в C
+          // Находим начало QRS (PQ junction)
           int onset = (maxVal / 100).round() + 2;
           int tpq = t - 5;
           
@@ -273,7 +273,7 @@ class WQRS {
           }
 
           if (!learning) {
-            // Проверяем, что не достигли конца записи (как в C)
+            // Проверяем, что не достигли конца записи
             _getSample(_sig, tpq);
             if (!_isSampleValid()) break;
             
@@ -284,28 +284,19 @@ class WQRS {
             });
           }
 
-          // Обновляем пороги (как в C)
+          // Обновляем пороги
           Ta += (maxVal - Ta) / 10;
           T1 = Ta / 3;
 
-          // Блокировка на время eye-closing (как в C)
+          // Блокировка на время eye-closing
           t += _EyeClosing;
         }
       } else if (!learning) {
-        // Уменьшаем порог если долго нет детекций (как в C)
+        // Уменьшаем порог если долго нет детекций
         timer++;
         if (timer > _ExpectPeriod && Ta > _Tm) {
           Ta--;
           T1 = Ta / 3;
-        }
-      }
-
-      // Отслеживание прогресса
-      if (t >= next_minute) {
-        next_minute += spm.round();
-        minutes++;
-        if (minutes % 10 == 0) {
-          print('Обработано $minutes минут');
         }
       }
     }
