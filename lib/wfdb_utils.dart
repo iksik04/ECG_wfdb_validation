@@ -31,26 +31,15 @@ String getWfdbCommand(String command) {
 class SignalInfo {
   final double sampleRate;
   final double gain;
-  final int bits;
-  final int adcZero;
-  final int baseline;
-  final String units;
-  final String signalName;
 
   SignalInfo({
     required this.sampleRate,
     required this.gain,
-    required this.bits,
-    required this.adcZero,
-    required this.baseline,
-    required this.units,
-    required this.signalName,
   });
 
   @override
   String toString() {
-    return 'SignalInfo(sampleRate: $sampleRate, gain: $gain, bits: $bits, '
-        'adcZero: $adcZero, baseline: $baseline, units: $units, signalName: $signalName)';
+    return 'SignalInfo(sampleRate: $sampleRate, gain: $gain)';
   }
 }
 
@@ -106,15 +95,7 @@ Future<SignalInfo?> getSignalInfo(String filePath, int channel) async {
 
     // Формат строки канала:
     // fileName format gain bits adc_zero baseline [units] [signalName]
-    // где:
-    // fileName - имя файла данных (может быть пустым)
-    // format - формат данных (16, 32, 64, или другие)
-    // gain - усиление в мкВ/единицу АЦП
-    // bits - количество бит
-    // adc_zero - нулевое значение АЦП
-    // baseline - базовое значение (обычно adc_zero)
-    // units - единицы измерения (опционально)
-    // signalName - имя сигнала (опционально)
+    // где gain - коэффициент усиления (третье число после имени файла)
 
     int index = 0;
     // Пропускаем имя файла если оно есть
@@ -122,78 +103,24 @@ Future<SignalInfo?> getSignalInfo(String filePath, int channel) async {
       index = 1;
     }
 
-    // format
-    final format = int.tryParse(channelParts[index]);
-    if (format == null) {
-      print('Предупреждение: неверный формат данных');
-      return null;
-    }
+    // Пропускаем format
     index++;
-
-    // gain
+    
+    // Получаем gain (коэффициент усиления)
     final gain = double.tryParse(channelParts[index]);
     if (gain == null || gain == 0) {
       print('Предупреждение: неверное усиление');
       return null;
     }
-    index++;
-
-    // bits
-    final bits = int.tryParse(channelParts[index]);
-    if (bits == null) {
-      print('Предупреждение: неверное количество бит');
-      return null;
-    }
-    index++;
-
-    // adc_zero
-    final adcZero = int.tryParse(channelParts[index]);
-    if (adcZero == null) {
-      print('Предупреждение: неверное нулевое значение АЦП');
-      return null;
-    }
-    index++;
-
-    // baseline
-    final baseline = int.tryParse(channelParts[index]);
-    if (baseline == null) {
-      print('Предупреждение: неверное базовое значение');
-      return null;
-    }
-    index++;
-
-    // units (опционально)
-    String units = 'mV';
-    if (channelParts.length > index) {
-      units = channelParts[index];
-      index++;
-    }
-
-    // signalName (опционально)
-    String signalName = '';
-    if (channelParts.length > index) {
-      signalName = channelParts.sublist(index).join(' ');
-    }
 
     return SignalInfo(
       sampleRate: sampleRate,
       gain: gain,
-      bits: bits,
-      adcZero: adcZero,
-      baseline: baseline,
-      units: units,
-      signalName: signalName,
     );
   } catch (e) {
     print('Ошибка чтения файла .hea: $e');
     return null;
   }
-}
-
-/// Чтение частоты дискретизации из файла .hea (для обратной совместимости)
-Future<double> getSampleRate(String filePath) async {
-  final info = await getSignalInfo(filePath, 0);
-  return info?.sampleRate ?? 360.0;
 }
 
 /// Загрузка данных ЭКГ с помощью rdsamp (без флага -p для сырых значений АЦП)
@@ -213,7 +140,7 @@ Future<List<double>> loadECGDataWithRDSamp(String folderPath, String recordName,
     // БЕЗ флага -p для получения сырых значений АЦП
     final result = await Process.run(
       rdsampCmd,
-      ['-r', recordName, '-f', '0', '-t', 'end', '-v'],
+      ['-r', recordName, '-f', '0', '-t', 'end'],
       runInShell: true,
       workingDirectory: folderPath,
       environment: {'WFDB': '.'},
@@ -261,36 +188,6 @@ List<double> _parseRDSampOutput(String output, int channel) {
   return signal;
 }
 
-/// Загрузка данных ЭКГ с преобразованием в физические единицы
-/// Использует gain из .hea для преобразования АЦП -> физические единицы
-Future<List<double>> loadECGDataPhysical(String folderPath, String recordName, int channel) async {
-  try {
-    // Получаем информацию о сигнале
-    final signalInfo = await getSignalInfo('$folderPath\\$recordName', channel);
-    if (signalInfo == null) {
-      print('Ошибка: не удалось получить информацию о сигнале');
-      return [];
-    }
-
-    // Загружаем сырые данные
-    final rawData = await loadECGDataWithRDSamp(folderPath, recordName, channel);
-    if (rawData.isEmpty) {
-      return [];
-    }
-
-    // Преобразуем в физические единицы (например, мкВ)
-    // Формула: physical = (raw - baseline) / gain
-    final physicalData = rawData.map((raw) {
-      return (raw - signalInfo.baseline) / signalInfo.gain;
-    }).toList();
-
-    return physicalData;
-  } catch (e) {
-    print('Ошибка загрузки физических данных: $e');
-    return [];
-  }
-}
-
 /// Запись пиков в аннотационный файл с помощью wrann
 Future<void> writePeaksWithWRAnn(String folderPath, String recordName, List<int> peaks, int fs) async {
   try {
@@ -317,7 +214,7 @@ Future<void> writePeaksWithWRAnn(String folderPath, String recordName, List<int>
 
     final process = await Process.start(
       wrannCmd,
-      ['-r', recordName, '-a', 'wqrs'],
+      ['-r', recordName, '-a', 'gqrs'],
       mode: ProcessStartMode.normal,
       workingDirectory: folderPath,
       environment: {'WFDB': '.'},
@@ -376,7 +273,6 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
     print('Ошибка: данные не загружены');
     return;
   }
-
   print('Загружено ${ecgData.length} отсчётов (сырые значения АЦП)');
 
   // Создаём детектор с нужной частотой дискретизации
@@ -384,7 +280,7 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
   final detector = WQRS(
     sampleRate: signalInfo.sampleRate,
     signal: channel,
-    gain: signalInfo.gain, // Теперь передается double
+    gain: signalInfo.gain,
   );
 
   // Детектируем QRS комплексы
@@ -394,7 +290,6 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
   final List<int> peaks = detections.map((d) => d['time'] as int).toList();
 
   print('Найдено QRS комплексов: ${peaks.length}');
-  
   // Сохраняем аннотации
   await writePeaksWithWRAnn(folderPath, recordNumber, peaks, fs);
 }

@@ -66,13 +66,6 @@ class WQRS {
     _ExpectPeriod = (_sampleRate * NDP).round();
     _LTwindow = (_sampleRate * MaxQRSw).round();
     
-    // Для данных в мВ коэффициент усиления = 1.0
-    // В оригинальном C-коде: lfsc = 1.25 * gain^2 / sps
-    // где gain - коэффициент перевода АЦП в физические единицы
-    // Поскольку данные уже в мВ, gain = 1.0
-  if (_gain == null || _gain == 0) {
-      _gain = 200.0; // значение по умолчанию
-    }
     _lfsc = 1.25 * _gain! * _gain! / _sampleRate;
     
     print('WQRS initialized:');
@@ -88,7 +81,6 @@ class WQRS {
     if (_signal == null || t < 0 || t >= _signal!.length) {
       return -1; // WFDB_INVALID_SAMPLE
     }
-    // Данные уже в мВ, просто округляем до целых
     // (в оригинале WFDB_Sample это целое число)
     return _signal![t].round();
   }
