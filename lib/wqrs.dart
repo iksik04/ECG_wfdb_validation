@@ -312,27 +312,4 @@ class WQRS {
 
     return detections;
   }
-
-  /// Вспомогательный метод для отладки
-  List<int> getLTSampValues(List<double> signal) {
-    _signal = signal;
-    List<int> result = [];
-    int limit = signal.length > 1000 ? 1000 : signal.length;
-    for (int i = 0; i < limit; i++) {
-      result.add(ltsamp(i));
-    }
-    return result;
-  }
-
-  void debugLTSamp(List<double> signal, int start, int length) {
-    _signal = signal;
-    print('Диагностика ltsamp для сэмплов $start - ${start + length}:');
-    print('sample\tltsamp');
-    for (int i = start; i < start + length && i < signal.length; i++) {
-      int val = ltsamp(i);
-      if (i < start + 10 || i % 100 == 0) {
-        print('$i\t$val');
-      }
-    }
-  }
 }
