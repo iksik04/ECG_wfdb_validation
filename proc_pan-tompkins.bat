@@ -2,7 +2,7 @@
 setlocal
 
 set SCRIPT_NAME=lib\main.dart
-set DB_PATH=C:\Users\Public\Work\QRS-detector\ECG_DB\NSTDB
+set DB_PATH=C:\Users\Public\Work\QRS-detector\ECG_DB\AHADB
 
 echo Searching for records in folder %DB_PATH%...
 echo.

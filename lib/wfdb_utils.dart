@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 
+import '../lib/pan-tompkins.dart';
 import '../lib/wqrs.dart';
 
 // ============================================================
@@ -147,7 +148,7 @@ Future<List<double>> loadECGDataWithRDSamp(String folderPath, String recordName,
     // БЕЗ флага -p для получения сырых значений АЦП
     final result = await Process.run(
       rdsampCmd,
-      ['-r', recordName, '-f', '0', '-t', 'end'],
+      ['-r', recordName, '-f', '0', '-t', 'end', '-p'],
       runInShell: true,
       workingDirectory: folderPath,
       environment: {'WFDB': '.'},
@@ -284,18 +285,24 @@ Future<void> processRecording(String folderPath, String recordNumber, int channe
 
   // Создаём детектор с нужной частотой дискретизации
   // Передаем усиление в детектор для корректного расчета lfsc
-  final detector = WQRS(
+  /*final detector = WQRS(
     sampleRate: signalInfo.sampleRate,
     signal: channel,
     gain: signalInfo.gain,
+  );*/
+
+  final detector = PanTompkinsQRS(
+    sampleRate: signalInfo.sampleRate,
   );
 
   // Детектируем QRS комплексы
-  final detections = detector.process(ecgData);
+  /*final detections = detector.process(ecgData);
   
   // Извлекаем позиции QRS onset
-  final List<int> peaks = detections.map((d) => d['time'] as int).toList();
+  final List<int> peaks = detections.map((d) => d['time'] as int).toList();*/
 
+  final List<int> peaks = detector.detectRPeaks(ecgData);
+  
   print('Найдено QRS комплексов: ${peaks.length}');
   // Сохраняем аннотации
   await writePeaksWithWRAnn(folderPath, recordNumber, peaks, fs);
