@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set SCRIPT_NAME=wqrs
-set DB_PATH=C:\Users\Public\Work\QRS-detector\ECG_DB\AHADB
+set DB_PATH=C:\Users\Public\Work\QRS-detector\ECG_DB\MITDB
 
 echo Searching for records in folder %DB_PATH%...
 echo.

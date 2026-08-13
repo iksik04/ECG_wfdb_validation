@@ -107,7 +107,14 @@ Future<SignalInfo?> getSignalInfo(String filePath, int channel) async {
     index++;
     
     // Получаем gain (коэффициент усиления)
-    final gain = double.tryParse(channelParts[index]);
+    String gainStr = channelParts[index];
+    // Убираем скобки и всё что в них
+    int parenIndex = gainStr.indexOf('(');
+    if (parenIndex != -1) {
+      gainStr = gainStr.substring(0, parenIndex);
+    }
+    
+    final gain = double.tryParse(gainStr);
     if (gain == null || gain == 0) {
       print('Предупреждение: неверное усиление');
       return null;

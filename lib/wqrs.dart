@@ -4,7 +4,7 @@ import 'dart:io';
 
 class WQRS {
   // Константы из оригинального C-кода
-  static const int BUFLN = 16384;
+  static const int BUFLN = 16384;  // must be a power of 2
   static const double EYE_CLS = 0.25;
   static const double MaxQRSw = 0.13;
   static const double NDP = 2.5;
@@ -16,6 +16,7 @@ class WQRS {
   int _sig = -1;
   int _Tm = TmDEF;
   int _PWFreq = PWFreqDEF;
+  double _gain = 1.0;  // Всегда инициализирована
   
   // Параметры, вычисляемые на основе частоты дискретизации
   late int _LPn;
@@ -25,26 +26,28 @@ class WQRS {
   late int _ExpectPeriod;
   late double _lfsc;
 
-  // Состояние ltsamp
+  // Буферы для ltsamp (как в C)
   List<int>? _lbuf;
   List<int>? _ebuf;
   int _tt = -1;
   int _Yn = 0;
   int _Yn1 = 0;
   int _Yn2 = 0;
-  int _aet = 0;
+  int _aet = 0;  // Накопленная сумма length transform
   int _et = 0;
-
+  
   // Входной сигнал
   List<double>? _signal;
-  double? _gain;
+  
+  // Состояние валидности сэмпла (как в C)
+  bool _sampleValid = false;
 
   WQRS({
     double sampleRate = 250.0,
     int signal = -1,
     int threshold = TmDEF,
     int powerFreq = PWFreqDEF,
-    double? gain,
+    double gain = 1.0,
   }) {
     _sampleRate = sampleRate;
     _sig = signal;
@@ -56,9 +59,10 @@ class WQRS {
   }
 
   void _initializeParameters() {
-    // Фильтры для подавления сетевой наводки (50 или 60 Гц)
+    // Фильтры для подавления сетевой наводки
     _LPn = (_sampleRate / _PWFreq).round();
     if (_LPn > 8) _LPn = 8;
+    if (_LPn < 1) _LPn = 1;
     _LP2n = 2 * _LPn;
     
     // Параметры детекции
@@ -66,7 +70,12 @@ class WQRS {
     _ExpectPeriod = (_sampleRate * NDP).round();
     _LTwindow = (_sampleRate * MaxQRSw).round();
     
-    _lfsc = 1.25 * _gain! * _gain! / _sampleRate;
+    // Защита от слишком маленьких окон
+    if (_LTwindow < 1) _LTwindow = 1;
+    if (_EyeClosing < 1) _EyeClosing = 1;
+    
+    // Длина функции масштабирования (как в C)
+    _lfsc = 1.25 * _gain * _gain / _sampleRate;
     
     print('WQRS initialized:');
     print('  Sample rate: $_sampleRate Hz');
@@ -77,27 +86,32 @@ class WQRS {
     print('  LT window: $_LTwindow samples');
   }
 
-  int _sample(int sig, int t) {
+  /// Получение sample (как в C функция sample())
+  int _getSample(int sig, int t) {
     if (_signal == null || t < 0 || t >= _signal!.length) {
+      _sampleValid = false;
       return -1; // WFDB_INVALID_SAMPLE
     }
-    // (в оригинале WFDB_Sample это целое число)
+    _sampleValid = true;
     return _signal![t].round();
   }
 
-  bool _sampleValid() {
-    return _signal != null && _signal!.isNotEmpty;
+  /// Проверка валидности последнего полученного сэмпла (как в C sample_valid())
+  bool _isSampleValid() {
+    return _sampleValid;
   }
 
+  /// Length transform - точная копия C-реализации
   int ltsamp(int t) {
     int dy;
 
-    // Инициализация буферов
+    // Инициализация буферов (как в C)
     if (_lbuf == null) {
       _lbuf = List<int>.filled(BUFLN, 0);
       _ebuf = List<int>.filled(BUFLN, 0);
 
       if (_lbuf != null && _ebuf != null) {
+        // Инициализация ebuf как в C
         _ebuf![0] = sqrt(_lfsc).round();
         _tt = 1;
         while (_tt < BUFLN) {
@@ -105,6 +119,7 @@ class WQRS {
           _tt++;
         }
 
+        // Установка начального tt как в C
         if (t > BUFLN) {
           _tt = t - BUFLN;
         } else {
@@ -114,28 +129,34 @@ class WQRS {
         _Yn = 0;
         _Yn1 = 0;
         _Yn2 = 0;
+        _aet = 0;
+        _et = 0;
       } else {
         stderr.writeln('WQRS: insufficient memory');
         exit(2);
       }
     }
 
+    // Проверка буфера (как в C)
     if (t < _tt - BUFLN) {
       stderr.writeln('WQRS: ltsamp buffer too short');
       exit(2);
     }
 
+    // Основной цикл ltsamp (точная копия C)
     while (t > _tt) {
       _Yn2 = _Yn1;
       _Yn1 = _Yn;
 
-      int v0 = _sample(_sig, _tt);
-      int v1 = _sample(_sig, _tt - _LPn);
-      int v2 = _sample(_sig, _tt - _LP2n);
+      int v0 = _getSample(_sig, _tt);
+      int v1 = _getSample(_sig, _tt - _LPn);
+      int v2 = _getSample(_sig, _tt - _LP2n);
 
+      // Обновляем Yn только если все sample валидны (как в C)
       if (v0 != -1 && v1 != -1 && v2 != -1) {
         _Yn = 2 * _Yn1 - _Yn2 + v0 - 2 * v1 + v2;
       }
+      // Если sample невалидны, Yn не обновляется
 
       dy = (_Yn - _Yn1) ~/ _LP2n;
       _tt++;
@@ -143,6 +164,7 @@ class WQRS {
       _et = sqrt(_lfsc + dy * dy).round();
       _ebuf![_tt & (BUFLN - 1)] = _et;
 
+      // Накопление length transform (как в C)
       _aet += _et - _ebuf![(_tt - _LTwindow) & (BUFLN - 1)];
       _lbuf![_tt & (BUFLN - 1)] = _aet;
     }
@@ -150,6 +172,7 @@ class WQRS {
     return _lbuf![t & (BUFLN - 1)];
   }
 
+  /// Полный сброс состояния
   void reset() {
     _lbuf = null;
     _ebuf = null;
@@ -160,9 +183,10 @@ class WQRS {
     _aet = 0;
     _et = 0;
     _signal = null;
+    _sampleValid = false;
   }
 
-  // Основной метод обработки
+  /// Основной метод обработки
   List<Map<String, dynamic>> process(List<double> signal, {int? startTime, int? endTime}) {
     if (signal.isEmpty) return [];
 
@@ -171,6 +195,10 @@ class WQRS {
 
     int from = startTime ?? 0;
     int to = endTime ?? signal.length;
+    
+    if (from < 0) from = 0;
+    if (to > signal.length) to = signal.length;
+    if (from >= to) return [];
 
     List<Map<String, dynamic>> detections = [];
 
@@ -178,6 +206,7 @@ class WQRS {
     int t1 = (8 * _sampleRate).round();
     if (t1 > BUFLN * 0.9) t1 = (BUFLN / 2).round();
     t1 += from;
+    if (t1 > to) t1 = to;
 
     double T0 = 0;
     int sampleCount = 0;
@@ -191,40 +220,49 @@ class WQRS {
     bool learning = true;
     int timer = 0;
     int minutes = 0;
-    int next_minute = from + (60 * _sampleRate).round();
+    double spm = 60 * _sampleRate;
+    int next_minute = from + spm.round();
     double T1 = 0;
 
+    // Основной цикл детекции (точная копия C)
     for (int t = from; t < to && t < signal.length; t++) {
       if (learning) {
         if (t > t1) {
           learning = false;
           T1 = T0;
-          t = from;
+          t = from - 1;  // restart (как в C)
+          continue;
         } else {
           T1 = 2 * T0;
         }
       }
 
+      // Сравниваем с порогом T1
       if (ltsamp(t) > T1) {
         timer = 0;
         int maxVal = ltsamp(t);
         int minVal = ltsamp(t);
         
-        // Поиск максимума и минимума в окне
-        for (int tt = t + 1; tt < t + (_EyeClosing / 2).round() && tt < signal.length; tt++) {
+        // Поиск максимума и минимума (как в C)
+        int halfEye = (_EyeClosing / 2).round();
+        for (int tt = t + 1; tt < t + halfEye && tt < signal.length; tt++) {
           int val = ltsamp(tt);
           if (val > maxVal) maxVal = val;
         }
-        for (int tt = t - 1; tt > t - (_EyeClosing / 2).round() && tt >= 0; tt--) {
+        
+        for (int tt = t - 1; tt > t - halfEye && tt >= 0; tt--) {
           int val = ltsamp(tt);
           if (val < minVal) minVal = val;
         }
         
         if (maxVal > minVal + 10) {
-          // Находим начало QRS (PQ junction)
+          // Находим начало QRS (PQ junction) - как в C
           int onset = (maxVal / 100).round() + 2;
           int tpq = t - 5;
-          for (int tt = t; tt > t - (_EyeClosing / 2).round() && tt >= 4; tt--) {
+          
+          int searchStart = t - halfEye;
+          if (searchStart < 0) searchStart = 0;
+          for (int tt = t; tt > searchStart && tt >= 4; tt--) {
             if (ltsamp(tt) - ltsamp(tt - 1) < onset &&
                 ltsamp(tt - 1) - ltsamp(tt - 2) < onset &&
                 ltsamp(tt - 2) - ltsamp(tt - 3) < onset &&
@@ -235,8 +273,9 @@ class WQRS {
           }
 
           if (!learning) {
-            _sample(_sig, tpq);
-            if (!_sampleValid()) break;
+            // Проверяем, что не достигли конца записи (как в C)
+            _getSample(_sig, tpq);
+            if (!_isSampleValid()) break;
             
             detections.add({
               'time': tpq,
@@ -245,14 +284,15 @@ class WQRS {
             });
           }
 
-          // Обновляем пороги
+          // Обновляем пороги (как в C)
           Ta += (maxVal - Ta) / 10;
           T1 = Ta / 3;
 
-          // Блокировка на время eye-closing
+          // Блокировка на время eye-closing (как в C)
           t += _EyeClosing;
         }
       } else if (!learning) {
+        // Уменьшаем порог если долго нет детекций (как в C)
         timer++;
         if (timer > _ExpectPeriod && Ta > _Tm) {
           Ta--;
@@ -262,7 +302,7 @@ class WQRS {
 
       // Отслеживание прогресса
       if (t >= next_minute) {
-        next_minute += (60 * _sampleRate).round();
+        next_minute += spm.round();
         minutes++;
         if (minutes % 10 == 0) {
           print('Обработано $minutes минут');
@@ -273,11 +313,12 @@ class WQRS {
     return detections;
   }
 
-  // Вспомогательный метод для получения значений ltsamp
+  /// Вспомогательный метод для отладки
   List<int> getLTSampValues(List<double> signal) {
     _signal = signal;
     List<int> result = [];
-    for (int i = 0; i < signal.length; i++) {
+    int limit = signal.length > 1000 ? 1000 : signal.length;
+    for (int i = 0; i < limit; i++) {
       result.add(ltsamp(i));
     }
     return result;
@@ -285,7 +326,7 @@ class WQRS {
 
   void debugLTSamp(List<double> signal, int start, int length) {
     _signal = signal;
-    print('Диагностика ltsamp для первых $length сэмплов:');
+    print('Диагностика ltsamp для сэмплов $start - ${start + length}:');
     print('sample\tltsamp');
     for (int i = start; i < start + length && i < signal.length; i++) {
       int val = ltsamp(i);
@@ -294,5 +335,4 @@ class WQRS {
       }
     }
   }
-
 }
